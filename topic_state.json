@@ -1,5 +1,13 @@
 {
-  "channels": [],
-  "last_channel": null,
-  "next_topic_index": {}
+  "channels": [
+    "crimeledger",
+    "mindtactics",
+    "twistedtruths"
+  ],
+  "last_channel": "crimeledger",
+  "next_topic_index": {
+    "crimeledger": 2,
+    "mindtactics": 1,
+    "twistedtruths": 1
+  }
 }

@@ -19,33 +19,14 @@ def load_script(channel):
     return json.loads(script_path.read_text(encoding="utf-8"))
 
 
-def synthesize_with_piper(text, output_path):
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        result = subprocess.run(
-            ["piper", "--model", "en_US-lessac-medium", "--output-file", str(output_path)],
-            input=text.encode("utf-8"),
-            capture_output=True,
-            timeout=60
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"Piper failed: {result.stderr.decode()}")
-    except Exception as exc:
-        print(f"WARNING: Piper failed or not found ({exc}), falling back to espeak")
-        synthesize_with_espeak(text, output_path)
-
-
 def synthesize_with_espeak(text, output_path):
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        subprocess.run(
-            ["espeak", "-w", str(output_path), text],
-            check=True,
-            stderr=subprocess.DEVNULL,
-            timeout=30
-        )
-    except Exception as exc:
-        raise RuntimeError(f"Both piper and espeak failed: {exc}")
+    subprocess.run(
+        ["espeak", "-w", str(output_path), text],
+        check=True,
+        stderr=subprocess.DEVNULL,
+        timeout=30
+    )
 
 
 def main():
@@ -73,7 +54,7 @@ def main():
             continue
 
         print(f"Synthesizing scene {scene_id}")
-        synthesize_with_piper(narration, output_path)
+        synthesize_with_espeak(narration, output_path)
         print(f"Saved audio: {output_path}")
 
 

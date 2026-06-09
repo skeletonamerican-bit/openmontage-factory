@@ -1,4 +1,3 @@
-import io
 import json
 import os
 import subprocess
@@ -9,7 +8,6 @@ from urllib import error, parse, request
 
 ROOT = Path(__file__).resolve().parent.parent
 CHANNEL = os.getenv("CHANNEL")
-PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
 PIXABAY_API_KEY = os.getenv("PIXABAY_API_KEY")
 RATE_LIMIT_SECONDS = 0.3
 
@@ -44,23 +42,6 @@ def download_file(url, dest_path):
             print(f"Attempt {attempt} failed for {url}: {exc}")
         time.sleep(2)
     return False
-
-
-def pexels_video_url(query):
-    params = parse.urlencode({"query": query, "per_page": 1, "orientation": "landscape"})
-    url = f"https://api.pexels.com/videos/search?{params}"
-    headers = {"Authorization": PEXELS_API_KEY, "Accept": "application/json"}
-    req = request.Request(url, headers=headers, method="GET")
-    with request.urlopen(req, timeout=30) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-    videos = payload.get("videos", [])
-    if not videos:
-        return None
-    files = [item for item in videos[0].get("video_files", []) if item.get("file_type") == "video/mp4"]
-    if not files:
-        return None
-    files.sort(key=lambda item: item.get("width", 0), reverse=True)
-    return files[0].get("link")
 
 
 def pixabay_video_url(query):
@@ -126,7 +107,7 @@ def main():
             print("WARNING: skipping scene with missing id")
             continue
 
-        destination = footage_dir / f"{scene_id}.mp4"
+        destination = footage_dir / f"{scene_id}_1.mp4"
         if destination.exists():
             print(f"Skipping existing footage for scene {scene_id}")
             continue
@@ -144,19 +125,6 @@ def main():
                     print(f"Pixabay API error (attempt {attempt}): {exc.code} {exc.reason}")
                 except Exception as exc:
                     print(f"Pixabay request failed (attempt {attempt}): {exc}")
-                time.sleep(2)
-
-        if not video_url and PEXELS_API_KEY:
-            print(f"Searching Pexels for scene {scene_id}: {query}")
-            for attempt in range(1, 4):
-                try:
-                    video_url = pexels_video_url(query)
-                    if video_url:
-                        break
-                except error.HTTPError as exc:
-                    print(f"Pexels API error (attempt {attempt}): {exc.code} {exc.reason}")
-                except Exception as exc:
-                    print(f"Pexels request failed (attempt {attempt}): {exc}")
                 time.sleep(2)
 
         if video_url:
