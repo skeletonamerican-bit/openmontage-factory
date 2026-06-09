@@ -1,14 +1,24 @@
+import io
 import json
 import os
+import subprocess
+import sys
 import time
 from pathlib import Path
+from urllib import error, parse, request
 
-import requests
-
+ROOT = Path(__file__).resolve().parent.parent
+CHANNEL = os.getenv("CHANNEL")
 PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
 PIXABAY_API_KEY = os.getenv("PIXABAY_API_KEY")
-CHANNEL = os.getenv("CHANNEL")
 RATE_LIMIT_SECONDS = 0.3
+
+
+def load_script(channel):
+    script_path = ROOT / "projects" / channel / "script.json"
+    if not script_path.exists():
+        sys.exit(f"ERROR: Script file not found: {script_path}")
+    return json.loads(script_path.read_text(encoding="utf-8"))
 
 
 def download_file(url, dest_path):
@@ -18,107 +28,147 @@ def download_file(url, dest_path):
 
     for attempt in range(1, 4):
         try:
-            response = requests.get(url, stream=True, timeout=30)
-            response.raise_for_status()
-            dest_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(dest_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
+            req = request.Request(url, headers={"User-Agent": "python-fetch-assets/1.0"})
+            with request.urlopen(req, timeout=60) as response:
+                dest_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(dest_path, "wb") as out_file:
+                    while True:
+                        chunk = response.read(8192)
+                        if not chunk:
+                            break
+                        out_file.write(chunk)
             return True
+        except error.HTTPError as exc:
+            print(f"Attempt {attempt} failed for {url}: {exc.code} {exc.reason}")
         except Exception as exc:
             print(f"Attempt {attempt} failed for {url}: {exc}")
-            time.sleep(2)
+        time.sleep(2)
     return False
 
 
-def search_pexels(query):
-    headers = {"Authorization": PEXELS_API_KEY}
-    params = {"query": query, "per_page": 3, "orientation": "landscape"}
-    response = requests.get("https://api.pexels.com/videos/search", headers=headers, params=params, timeout=20)
-    response.raise_for_status()
-    data = response.json()
-    urls = []
-    for video in data.get("videos", []):
-        files = [item for item in video.get("video_files", []) if item.get("file_type") == "video/mp4"]
-        if files:
-            files.sort(key=lambda item: item.get("width", 0), reverse=True)
-            urls.append(files[0]["link"])
-    return urls
+def pexels_video_url(query):
+    params = parse.urlencode({"query": query, "per_page": 1, "orientation": "landscape"})
+    url = f"https://api.pexels.com/videos/search?{params}"
+    headers = {"Authorization": PEXELS_API_KEY, "Accept": "application/json"}
+    req = request.Request(url, headers=headers, method="GET")
+    with request.urlopen(req, timeout=30) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    videos = payload.get("videos", [])
+    if not videos:
+        return None
+    files = [item for item in videos[0].get("video_files", []) if item.get("file_type") == "video/mp4"]
+    if not files:
+        return None
+    files.sort(key=lambda item: item.get("width", 0), reverse=True)
+    return files[0].get("link")
 
 
-def search_pixabay(query):
-    params = {"key": PIXABAY_API_KEY, "q": query, "per_page": 3, "orientation": "horizontal"}
-    response = requests.get("https://pixabay.com/api/videos/", params=params, timeout=20)
-    response.raise_for_status()
-    data = response.json()
-    urls = []
-    for hit in data.get("hits", []):
+def pixabay_video_url(query):
+    if not PIXABAY_API_KEY:
+        return None
+    params = parse.urlencode({"key": PIXABAY_API_KEY, "q": query, "per_page": 3, "orientation": "horizontal"})
+    url = f"https://pixabay.com/api/videos/?{params}"
+    req = request.Request(url, method="GET")
+    with request.urlopen(req, timeout=30) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    hits = payload.get("hits", [])
+    if not hits:
+        return None
+    for hit in hits:
         videos = hit.get("videos", {})
         for quality in ("large", "medium", "small"):
             if quality in videos:
-                urls.append(videos[quality]["url"])
-                break
-    return urls
+                return videos[quality].get("url")
+    return None
 
 
-def fetch_urls(query):
-    if not PEXELS_API_KEY:
-        raise EnvironmentError("PEXELS_API_KEY is required")
+def create_placeholder_clip(dest_path, scene_id, query):
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    duration = 12
+    command = [
+        "ffmpeg",
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        f"color=c=black:s=1280x720:d={duration}",
+        "-vf",
+        "drawtext=text='Placeholder clip':fontcolor=white:fontsize=36:x=(w-text_w)/2:y=(h-text_h)/2",
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        str(dest_path),
+    ]
     try:
-        urls = search_pexels(query)
-        if urls:
-            return urls
+        subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return True
     except Exception as exc:
-        print(f"Pexels lookup failed for '{query}': {exc}")
-
-    if PIXABAY_API_KEY:
-        try:
-            urls = search_pixabay(query)
-            if urls:
-                return urls
-        except Exception as exc:
-            print(f"Pixabay lookup failed for '{query}': {exc}")
-    return []
+        print(f"WARNING: could not create placeholder clip: {exc}")
+        return False
 
 
 def main():
-    if not all([PEXELS_API_KEY, CHANNEL]):
-        raise SystemExit("Missing PEXELS_API_KEY or CHANNEL environment variables")
+    if not CHANNEL:
+        sys.exit("ERROR: Missing CHANNEL environment variable")
 
-    script_path = Path(f"projects/{CHANNEL}/script.json")
-    if not script_path.exists():
-        raise SystemExit(f"Script file not found: {script_path}")
-
-    with open(script_path, "r") as f:
-        script = json.load(f)
-
-    footage_dir = Path(f"projects/{CHANNEL}/footage")
+    script = load_script(CHANNEL)
+    footage_dir = ROOT / "projects" / CHANNEL / "footage"
     footage_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Fetching assets for {len(script['scenes'])} scenes...")
+    scenes = script.get("scenes", [])
+    print(f"Fetching assets for {len(scenes)} scenes...")
 
-    for scene in script["scenes"]:
-        scene_id = scene["id"]
-        print(f"Processing scene {scene_id}")
-        scene_clip = 1
-        for query in scene.get("pexels_queries", [])[:5]:
-            if not query:
-                continue
+    for scene in scenes:
+        scene_id = scene.get("id")
+        visual = scene.get("visual") or scene.get("title") or "stock footage"
+        if not scene_id:
+            print("WARNING: skipping scene with missing id")
+            continue
 
-            urls = fetch_urls(query)
-            if not urls:
-                print(f"No clip URLs found for query '{query}'")
+        destination = footage_dir / f"{scene_id}.mp4"
+        if destination.exists():
+            print(f"Skipping existing footage for scene {scene_id}")
+            continue
+
+        query = str(visual).strip()
+        video_url = None
+        if PIXABAY_API_KEY:
+            print(f"Searching Pixabay for scene {scene_id}: {query}")
+            for attempt in range(1, 4):
+                try:
+                    video_url = pixabay_video_url(query)
+                    if video_url:
+                        break
+                except error.HTTPError as exc:
+                    print(f"Pixabay API error (attempt {attempt}): {exc.code} {exc.reason}")
+                except Exception as exc:
+                    print(f"Pixabay request failed (attempt {attempt}): {exc}")
+                time.sleep(2)
+
+        if not video_url and PEXELS_API_KEY:
+            print(f"Searching Pexels for scene {scene_id}: {query}")
+            for attempt in range(1, 4):
+                try:
+                    video_url = pexels_video_url(query)
+                    if video_url:
+                        break
+                except error.HTTPError as exc:
+                    print(f"Pexels API error (attempt {attempt}): {exc.code} {exc.reason}")
+                except Exception as exc:
+                    print(f"Pexels request failed (attempt {attempt}): {exc}")
+                time.sleep(2)
+
+        if video_url:
+            print(f"Downloading scene {scene_id} from {video_url}")
+            if download_file(video_url, destination):
                 time.sleep(RATE_LIMIT_SECONDS)
                 continue
+            print(f"WARNING: failed to download video for scene {scene_id}, using placeholder")
 
-            for clip_url in urls[:2]:
-                dest_path = footage_dir / f"{scene_id}_{scene_clip:02d}.mp4"
-                if download_file(clip_url, dest_path):
-                    print(f"Downloaded {dest_path}")
-                else:
-                    print(f"Failed to download clip for scene {scene_id} from {clip_url}")
-                scene_clip += 1
-                time.sleep(RATE_LIMIT_SECONDS)
+        print(f"Creating placeholder clip for scene {scene_id}")
+        if not create_placeholder_clip(destination, scene_id, query):
+            sys.exit(f"ERROR: could not create fallback clip for scene {scene_id}")
 
     print("Fetch complete.")
 

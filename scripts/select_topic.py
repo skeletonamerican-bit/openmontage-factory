@@ -1,5 +1,6 @@
 import json
 import os
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -9,12 +10,12 @@ STATE_FILE = ROOT / "topic_state.json"
 
 def load_json(path, default=None):
     if path.exists():
-        return json.loads(path.read_text())
+        return json.loads(path.read_text(encoding="utf-8"))
     return default
 
 
 def save_json(path, content):
-    path.write_text(json.dumps(content, indent=2))
+    path.write_text(json.dumps(content, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def pick_channel_and_topic(topics, state):
@@ -36,13 +37,12 @@ def pick_channel_and_topic(topics, state):
     else:
         next_channel = channels[0]
 
-    topic_list = topics[next_channel]
+    topic_list = topics.get(next_channel, [])
     if not topic_list:
         raise ValueError(f"No topics available for channel {next_channel}")
 
     topic_index = state["next_topic_index"].get(next_channel, 0)
     selected_topic = topic_list[topic_index % len(topic_list)]
-
     state["next_topic_index"][next_channel] = (topic_index + 1) % len(topic_list)
     state["last_channel"] = next_channel
     return next_channel, selected_topic, state
@@ -52,10 +52,9 @@ def write_github_env(channel, topic):
     env_path = os.getenv("GITHUB_ENV")
     lines = [f"CHANNEL={channel}", f"TOPIC={topic}"]
     if env_path:
-        with open(env_path, "a") as f:
+        with open(env_path, "a", encoding="utf-8") as f:
             for line in lines:
                 f.write(line + "\n")
-
     for line in lines:
         print(line)
 
@@ -63,11 +62,15 @@ def write_github_env(channel, topic):
 def main():
     topics = load_json(TOPICS_FILE, {})
     if not topics:
-        raise SystemExit("topics.json is missing or empty")
+        sys.exit("ERROR: topics.json is missing or empty")
 
     state = load_json(STATE_FILE, {}) or {}
-    channel, topic, new_state = pick_channel_and_topic(topics, state)
-    save_json(STATE_FILE, new_state)
+    try:
+        channel, topic, state = pick_channel_and_topic(topics, state)
+    except Exception as exc:
+        sys.exit(f"ERROR: topic selection failed: {exc}")
+
+    save_json(STATE_FILE, state)
     write_github_env(channel, topic)
 
 

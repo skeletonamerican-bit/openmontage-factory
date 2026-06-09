@@ -64,10 +64,10 @@ def make_subtitles(script, path):
         narration = scene["narration"].strip()
         words = [w for w in narration.split() if w]
         if not words:
-            current_time += float(scene["duration"])
+            current_time += float(scene.get("duration_seconds", 60))
             continue
 
-        word_duration = float(scene["duration"]) / max(len(words), 1)
+        word_duration = float(scene.get("duration_seconds", 60)) / max(len(words), 1)
         for idx, word in enumerate(words):
             cleaned = word.strip(".,?!:;\"'()[]")
             lower = cleaned.lower()
@@ -84,14 +84,14 @@ def make_subtitles(script, path):
                 f"Dialogue: 0,{format_timestamp(start)},{format_timestamp(end)},Default,,0,0,0,,{text}"
             )
 
-        current_time += float(scene["duration"])
+        current_time += float(scene.get("duration_seconds", 60))
 
     path.write_text("\n".join(lines))
 
 
 def build_scene_source(scene, channel, index, output_dir):
     scene_id = scene["id"]
-    duration = float(scene["duration"])
+    duration = float(scene.get("duration_seconds", 60))
     scene_video = output_dir / f"scene_{index:02d}.mp4"
     image_file = ROOT / "projects" / channel / "images" / f"{scene_id}.png"
     footage_dir = ROOT / "projects" / channel / "footage"
@@ -102,7 +102,7 @@ def build_scene_source(scene, channel, index, output_dir):
         return scene_video
 
     source = None
-    if scene["type"] == "broll":
+    if scene.get("type", "broll") == "broll":
         candidates = sorted(footage_dir.glob(f"{scene_id}_*.mp4"))
         if candidates:
             source = candidates[0]
@@ -364,7 +364,7 @@ def main():
     for idx, scene in enumerate(script["scenes"], start=1):
         scene_video = build_scene_source(scene, channel, idx, build_dir)
         scene_videos.append(scene_video)
-        durations.append(float(scene["duration"]))
+        durations.append(float(scene.get("duration_seconds", 60)))
         scene_audio_files.append(output_dir / "audio" / f"{scene['id']}.wav")
 
     audio_master = build_dir / "final_voice.wav"

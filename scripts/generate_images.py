@@ -22,17 +22,25 @@ def save_image(output_path, image_data):
 
 
 def render_image(prompt, api_key):
-    url = "https://generativelanguage.googleapis.com/v1beta2/images:generate"
+    url = "https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict"
     payload = {
-        "model": "imagen-1.0",
-        "prompt": prompt,
-        "size": "1920x1080",
+        "instances": [{"prompt": prompt}],
+        "parameters": {
+            "sampleCount": 1,
+            "aspectRatio": "16:9",
+        },
     }
-    headers = {"Content-Type": "application/json"}
-    response = requests.post(f"{url}?key={api_key}", json=payload, headers=headers, timeout=60)
+    headers = {
+        "Content-Type": "application/json",
+        "x-goog-api-key": api_key,
+    }
+    response = requests.post(url, json=payload, headers=headers, timeout=120)
     response.raise_for_status()
     data = response.json()
-    image_b64 = data["data"][0]["image"]
+    predictions = data.get("predictions", [])
+    if not predictions:
+        raise RuntimeError("No predictions returned from Imagen API")
+    image_b64 = predictions[0]["bytesBase64Encoded"]
     return base64.b64decode(image_b64)
 
 
@@ -48,8 +56,9 @@ def main():
 
     for scene in script["scenes"]:
         scene_id = scene["id"]
+        img_prompt = scene.get("image_prompt", scene.get("visual", ""))
         scene_prompt = (
-            f"{scene['image_prompt']}. Cinematic dark drama style, moody lighting, dramatic contrast, cinematic film composition, "
+            f"{img_prompt}. Cinematic dark drama style, moody lighting, dramatic contrast, cinematic film composition, "
             f"deep shadows and subtle rim light, 16:9, high detail, atmospheric storytelling."
         )
         output_path = output_dir / f"{scene_id}.png"
