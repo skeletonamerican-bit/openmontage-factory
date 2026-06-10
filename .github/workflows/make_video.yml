@@ -58,10 +58,13 @@ jobs:
           CHANNEL: ${{ steps.select_topic.outputs.CHANNEL }}
           TOPIC: ${{ steps.select_topic.outputs.TOPIC }}
 
-      - name: Generate AI assets
+      - name: Generate AI assets (Kaggle T4)
         run: python scripts/generate_assets.py
         env:
           CHANNEL: ${{ steps.select_topic.outputs.CHANNEL }}
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
 
       - name: Generate TTS
         run: python scripts/generate_tts.py

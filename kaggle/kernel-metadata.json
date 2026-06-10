@@ -1,7 +1,7 @@
 {
-  "id": "forts845/ltx-video-runner",
-  "title": "OpenMontage LTX-Video Runner",
-  "code_file": "ltx_video_runner.py",
+  "id": "forts845/ltx-flux-runner",
+  "title": "OpenMontage FLUX + LTX Runner",
+  "code_file": "flux_ltx_runner.py",
   "language": "python",
   "kernel_type": "script",
   "is_private": true,
@@ -9,7 +9,7 @@
   "gpu_type": "t4",
   "enable_internet": true,
   "dataset_sources": [
-    "forts845/openmontage-factory"
+    "forts845/openmontage-prompts"
   ],
   "competition_sources": [],
   "kernel_sources": []
