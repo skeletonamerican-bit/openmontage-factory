@@ -336,11 +336,10 @@ jobs:
           CHANNEL: ${{ steps.select_topic.outputs.CHANNEL }}
           TOPIC: ${{ steps.select_topic.outputs.TOPIC }}
 
-      - name: Fetch assets
-        run: python scripts/fetch_assets.py
+      - name: Generate AI assets
+        run: python scripts/generate_assets.py
         env:
           CHANNEL: ${{ steps.select_topic.outputs.CHANNEL }}
-          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
 
       - name: Generate TTS
         run: python scripts/generate_tts.py

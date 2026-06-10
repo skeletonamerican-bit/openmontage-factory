@@ -9,38 +9,32 @@ CONFIGS = {
         "style": "Gothic Dark Academia, Archive Noir aesthetic, historical mystery documentary",
         "tone": "dramatic, haunting, reverent with morbid curiosity",
         "scenes": 25,
-        "duration_min": 25,
-        "visual_style": "historical archive photo, 35mm film grain, Rembrandt lighting, chiaroscuro, moody shadows, dark academia aesthetic",
+        "duration_min": 5,
+        "visual_style": "Gothic Dark Academia / Archive Noir",
         "color_note": "deep black, amber gold, ink blue palette"
     },
     "crimeledger": {
         "style": "Scandinavian Detective noir, David Fincher aesthetic (Se7en, Zodiac)",
         "tone": "investigative, cold, methodical, shocking",
         "scenes": 18,
-        "duration_min": 18,
-        "visual_style": "cold steel grey, dark green tint, fluorescent lighting, rain soaked streets",
+        "duration_min": 3.6,
+        "visual_style": "Scandinavian Detective / David Fincher",
         "color_note": "dark green, cold blue, steel grey palette"
     },
     "mindtactics": {
         "style": "Psychological Thriller, Analog Horror aesthetic",
         "tone": "unsettling, analytical, clinical, creeping dread",
         "scenes": 15,
-        "duration_min": 15,
-        "visual_style": "dark psychological portrait, high contrast, one color accent, psychiatric file aesthetic",
-        "color_note": "monochrome with red/green accent palette"
+        "duration_min": 3,
+        "visual_style": "Psychological Thriller / Analog Horror",
+        "color_note": "monochrome with red accent palette"
     },
 }
 
 VISUAL_SUFFIXES = {
     "weirdhistory": "[SFX: paper rustle, distant clock chime] color_note: deep black, amber gold, ink blue",
     "crimeledger": "[SFX: rain patter, typewriter click] color_note: dark green, cold blue, steel grey",
-    "mindtactics": "[SFX: tape rewind, static hiss] color_note: monochrome with red/green accent",
-}
-
-STOCK_TERMS = {
-    "weirdhistory": "historical archive photo, 35mm film grain, Rembrandt lighting, chiaroscuro, moody shadows, dark academia aesthetic",
-    "crimeledger": "crime scene investigation, rain police lights, handcuffs slow motion, dark corridor, interrogation room, night highway",
-    "mindtactics": "dark psychological portrait, high contrast, one color accent, psychiatric file aesthetic, chess pieces, broken mirror",
+    "mindtactics": "[SFX: tape rewind, static hiss] color_note: monochrome with red accent",
 }
 
 PROMPT = """You are an elite YouTube documentary scriptwriter like MagnatesMedia.
@@ -56,15 +50,23 @@ RULES:
 3. ALL narrations must use SPECIFIC details: exact amounts, real names, dates, locations
 4. Last scene: moral lesson + "Subscribe to never miss a story like this"
 5. Structure: Hook → Origin → Rise → Betrayal → Unravels → Consequences → Resolution → CTA
-6. Each scene is 55-70 seconds for narrations
+6. Each scene is EXACTLY 12 seconds — narration must be ~25-30 words
 
-For EACH scene, the "visual" field MUST include this prefix + the scene description + SFX cue + color note:
-Style prefix: "{visual_style}"
-Content: describe the scene imagery in vivid detail
+For EACH scene, the "visual" field MUST use this EXACT format with 3 prompts separated by pipes:
+IMG1: [describe photo1: the primary photo scene, vivid visual detail, {img_style}]
+| IMG2: [describe photo2: the secondary photo scene, complementary shot, {img_style}]
+| VID: [describe the 4-second video clip scene, cinematic motion, {vid_style}]
+
+Channel image style keywords - weave these into IMG prompts:
+{img_keywords}
+
+Channel video style keywords - weave these into VID prompts:
+{vid_keywords}
+
 Then append: {sfx_suffix}
 
 Return ONLY valid JSON, NO markdown:
-{{"title":"","description":"","tags":[],"scenes":[{{"id":1,"title":"","narration":"","visual":"","duration_seconds":60,"emotion":""}}]}}"""
+{{"title":"","description":"","tags":[],"scenes":[{{"id":1,"title":"","narration":"","visual":"","duration_seconds":12,"emotion":""}}]}}"""
 
 def main():
     token = os.environ.get("GITHUB_TOKEN", "").strip()
@@ -78,9 +80,25 @@ def main():
         print(f"ERROR: Unknown channel {ch}")
         sys.exit(1)
     sfx = VISUAL_SUFFIXES.get(ch, "")
+
+    img_keywords_map = {
+        "weirdhistory": "historical archive photograph, 35mm film grain, Rembrandt lighting, chiaroscuro contrast, amber candlelight, deep black shadows, dark academia aesthetic, moody atmospheric, Caravaggio style lighting, dusty archive",
+        "crimeledger": "crime scene photograph, cold blue steel lighting, fluorescent light, dark green shadows, forensic documentary style, high contrast black and white with teal tones, Fincher aesthetic, clinical cold atmosphere",
+        "mindtactics": "psychological portrait, high contrast monochrome, single red accent color, psychiatric file aesthetic, dark surreal, analog horror style, glitch distortion, VHS aesthetic",
+    }
+    vid_keywords_map = {
+        "weirdhistory": "cinematic dark historical scene, slow dramatic movement, film grain overlay, amber tones",
+        "crimeledger": "crime documentary footage, cold steel blue tones, slow motion, noir atmosphere",
+        "mindtactics": "psychological thriller abstract, chess pieces slow motion, broken mirror reflection, ink dissolving in water, silhouette in fog, VHS glitch",
+    }
+
     print(f"Channel:{ch} | Topic:{topic} | Scenes:{cfg['scenes']} | Model:{MODEL}")
     prompt = PROMPT.format(
         topic=topic, sfx_suffix=sfx,
+        img_keywords=img_keywords_map.get(ch, ""),
+        vid_keywords=vid_keywords_map.get(ch, ""),
+        img_style=cfg["visual_style"],
+        vid_style=cfg["visual_style"],
         **cfg
     )
     payload = json.dumps({

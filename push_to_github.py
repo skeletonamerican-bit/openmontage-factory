@@ -10,7 +10,7 @@ FILES = {
     "assemble_v2.py":                    "assemble_v2.py",
     "scripts/select_topic.py":           "scripts/select_topic.py",
     "scripts/generate_script.py":        "scripts/generate_script.py",
-    "scripts/fetch_assets.py":           "scripts/fetch_assets.py",
+    "scripts/generate_assets.py":        "scripts/generate_assets.py",
     "scripts/generate_tts.py":           "scripts/generate_tts.py",
     "scripts/assemble_video.py":         "scripts/assemble_video.py",
     "scripts/notify_telegram.py":        "scripts/notify_telegram.py",

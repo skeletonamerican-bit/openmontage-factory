@@ -1,4 +1,4 @@
-import json, os, subprocess, sys, shutil
+import json, os, subprocess, sys, shutil, math
 from pathlib import Path
 
 CHANNEL = os.getenv("CHANNEL", "weirdhistory").strip().lower()
@@ -14,9 +14,9 @@ W, H, FPS = 1920, 1080, 30
 FONT = "DejaVuSans-Bold"
 FONT_SIZE = 76
 SUB_Y_PCT = 0.82
-KB_NORMAL = ("1.00", "1.05")
-KB_PEAK = ("1.12", "1.00")
-PEAK_SCENES = {3, 6, 9, 12, 15, 18, 21, 24}
+SCENE_DUR = 12
+PHOTO_DUR = 4
+VIDEO_DUR = 4
 
 CHANNEL_CONFIGS = {
     "weirdhistory": {
@@ -32,7 +32,8 @@ CHANNEL_CONFIGS = {
             "vignette=PI/4"
         ),
         "sfx_cut": "cinematic_boom",
-        "description": "35mm film grain overlay, vignette, Chiaroscuro lighting — Gothic Dark Academia",
+        "ken_burns_dir": "in",  # slow hypnotic zoom to center only
+        "description": "35mm grain overlay, vignette, Chiaroscuro lighting — Gothic Dark Academia",
     },
     "crimeledger": {
         "color_grade": (
@@ -46,6 +47,7 @@ CHANNEL_CONFIGS = {
             "vignette=PI/3.5"
         ),
         "sfx_cut": "typewriter_click",
+        "ken_burns_dir": "alt",  # alternate zoom-in/zoom-out
         "description": "Cold steel grade: dark green, cold blue, steel grey — Scandinavian Detective noir",
     },
     "mindtactics": {
@@ -62,7 +64,8 @@ CHANNEL_CONFIGS = {
             "vignette=PI/3"
         ),
         "sfx_cut": "tape_rewind",
-        "description": "VHS glitch overlay, monochrome with red/green accent — Analog Horror",
+        "ken_burns_dir": "alt",
+        "description": "VHS glitch overlay, monochrome with red accent — Analog Horror",
     },
 }
 
@@ -122,19 +125,15 @@ def get_dur(p):
     return float(r.stdout.strip())
 
 
-def fix_audio(src, dst):
-    run([
-        "ffmpeg", "-y", "-i", str(src),
-        "-af", "atrim=start=0.08,loudnorm=I=-14:TP=-1:LRA=11",
-        "-ar", "44100", str(dst)
-    ])
-
-
-def ken_burns(src, dst, dur, idx):
-    zs, ze = KB_PEAK if idx in PEAK_SCENES else KB_NORMAL
+def ken_burns_photo(src, dst, dur, zoom_dir, cfg):
     frames = int(dur * FPS)
-    zexpr = f"'if(eq(on,1),{zs},zoom+({ze}-{zs})/{frames})'"
-    cfg = CHANNEL_CONFIGS.get(CHANNEL, CHANNEL_CONFIGS["weirdhistory"])
+    kb_dir = cfg.get("ken_burns_dir", "alt")
+    if kb_dir == "in" or zoom_dir == "in":
+        zs, ze = "1.0", "1.12"
+        zexpr = f"'if(eq(on,1),{zs},zoom+({ze}-{zs})/{frames})'"
+    else:
+        zs, ze = "1.12", "1.0"
+        zexpr = f"'if(eq(on,1),{zs},zoom-({zs}-{ze})/{frames})'"
     color_grade = cfg["color_grade"]
     extra_vf = cfg["extra_vf"]
     run([
@@ -148,6 +147,50 @@ def ken_burns(src, dst, dur, idx):
         "-t", str(dur), "-an",
         "-preset", "fast", "-crf", "18", str(dst)
     ])
+
+
+def prep_video_clip(src, dst, dur, cfg):
+    if not src.exists():
+        create_placeholder(dst, "missing clip")
+        return
+    color_grade = cfg["color_grade"]
+    extra_vf = cfg["extra_vf"]
+    src_dur = get_dur(src)
+    loop = ""
+    trim = ""
+    if src_dur < dur and src_dur > 0:
+        loop = f"-stream_loop -1"
+        trim = f"-t {dur}"
+    elif src_dur >= dur:
+        trim = f"-t {dur}"
+    cmd = [
+        "ffmpeg", "-y",
+    ]
+    if loop:
+        cmd.extend(loop.split())
+    cmd.extend(["-i", str(src)])
+    vf = f"scale={W}:{H}:force_original_aspect_ratio=decrease,pad={W}:{H}:(ow-iw)/2:(oh-ih)/2,{color_grade},{extra_vf}"
+    filter_parts = ["-vf", vf]
+    if trim:
+        filter_parts.extend(trim.split())
+    cmd.extend(filter_parts)
+    cmd.extend(["-an", "-preset", "fast", "-crf", "18", str(dst)])
+    run(cmd)
+
+
+def create_placeholder(dst, text):
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", f"color=c=black:s={W}x{H}:d={VIDEO_DUR}",
+        "-vf", f"drawtext=text='{text[:80]}':fontcolor=white:fontsize=28:x=(w-text_w)/2:y=(h-text_h)/2",
+        "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "23",
+        str(dst)
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True)
+    except Exception as e:
+        print(f"  Placeholder failed: {e}")
 
 
 def make_ass(text, dur):
@@ -245,27 +288,82 @@ def mix_music(voice, music, out, dur):
         ])
 
 
-def process_scene(idx, scene, wav, mp4, tmp):
+def fix_audio(src, dst, target_dur):
+    run([
+        "ffmpeg", "-y", "-i", str(src),
+        "-af", f"atrim=start=0.08:duration={target_dur},loudnorm=I=-14:TP=-1:LRA=11,apad=whole_dur={target_dur}",
+        "-ar", "44100", str(dst)
+    ])
+
+
+def process_scene(idx, scene, wav, tmp):
     text = scene.get("narration", scene.get("text", ""))
     p = tmp / f"s{idx:02d}"
+    cfg = CHANNEL_CONFIGS.get(CHANNEL, CHANNEL_CONFIGS["weirdhistory"])
+
     wav_fix = Path(str(p) + "_fix.wav")
-    fix_audio(wav, wav_fix)
-    dur = get_dur(wav_fix)
-    kb = Path(str(p) + "_kb.mp4")
-    ken_burns(mp4, kb, dur, idx)
+    fix_audio(wav, wav_fix, SCENE_DUR)
+
+    photo1 = FOOTAGE_DIR / f"s{idx}_photo1.jpg"
+    photo2 = FOOTAGE_DIR / f"s{idx}_photo2.jpg"
+    video = FOOTAGE_DIR / f"s{idx}_1.mp4"
+
+    kb1 = Path(str(p) + "_kb1.mp4")
+    if photo1.exists():
+        zoom_dir = "in"
+        ken_burns_photo(photo1, kb1, PHOTO_DUR, zoom_dir, cfg)
+    else:
+        create_placeholder(kb1, f"[{CHANNEL}] Photo1 scene {idx}")
+
+    kb2 = Path(str(p) + "_kb2.mp4")
+    if photo2.exists():
+        zoom_dir = "out"
+        ken_burns_photo(photo2, kb2, PHOTO_DUR, zoom_dir, cfg)
+    else:
+        create_placeholder(kb2, f"[{CHANNEL}] Photo2 scene {idx}")
+
+    vclip = Path(str(p) + "_vclip.mp4")
+    if video.exists():
+        prep_video_clip(video, vclip, VIDEO_DUR, cfg)
+    else:
+        create_placeholder(vclip, f"[{CHANNEL}] Video scene {idx}")
+
+    concat_raw = Path(str(p) + "_concat.mp4")
+    concat_list = Path(str(p) + "_concat.txt")
+    concat_list.write_text(
+        f"file '{kb1.resolve()}'\n"
+        f"file '{kb2.resolve()}'\n"
+        f"file '{vclip.resolve()}'\n"
+    )
+    run([
+        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+        "-i", str(concat_list),
+        "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+        "-an", str(concat_raw)
+    ])
+
     sub = Path(str(p) + "_sub.mp4")
-    burn_subs(kb, sub, text, dur)
+    burn_subs(concat_raw, sub, text, SCENE_DUR)
+
     if MUSIC_FILE.exists():
         mix_a = Path(str(p) + "_mix.aac")
-        mix_music(wav_fix, MUSIC_FILE, mix_a, dur)
+        mix_music(wav_fix, MUSIC_FILE, mix_a, SCENE_DUR)
         a_src = mix_a
     else:
         a_src = wav_fix
+
     out = Path(str(p) + "_wa.mp4")
     run([
         "ffmpeg", "-y", "-i", str(sub), "-i", str(a_src),
         "-c:v", "copy", "-c:a", "aac", "-shortest", str(out)
     ])
+
+    for f in [kb1, kb2, vclip, concat_raw, sub]:
+        if f and f.exists():
+            try:
+                f.unlink()
+            except:
+                pass
     return out
 
 
@@ -281,9 +379,8 @@ def main():
         data = json.load(f)
     scenes = data if isinstance(data, list) else data.get("scenes", [])
     wavs = sorted(AUDIO_DIR.glob("*.wav"))
-    footages = sorted(FOOTAGE_DIR.glob("*.mp4"))
-    n = min(len(scenes), len(wavs), len(footages))
-    print(f"Scenes: {n} | WAV: {len(wavs)} | MP4: {len(footages)}")
+    n = min(len(scenes), len(wavs))
+    print(f"Scenes: {n} | WAV: {len(wavs)} | Each scene: {SCENE_DUR}s")
     if n == 0:
         print("ERROR: no files to process")
         sys.exit(1)
@@ -292,9 +389,10 @@ def main():
     tmp.mkdir(exist_ok=True)
     done = []
     for i in range(n):
-        sid = scenes[i].get("title", "")[:40]
+        sid = scenes[i].get("title", str(scenes[i].get("id", "")))[:40]
         print(f"\n  == Scene {i+1}/{n}: {sid}")
-        done.append(process_scene(i + 1, scenes[i], wavs[i], footages[i], tmp))
+        done.append(process_scene(i + 1, scenes[i], wavs[i], tmp))
+
     cl = Path("/tmp/concat_factory.txt")
     cl.write_text("\n".join(f"file '{f.resolve()}'" for f in done))
     run([

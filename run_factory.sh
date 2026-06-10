@@ -6,9 +6,9 @@ if [ -z "$CHANNEL" ]; then
   echo "Usage: $0 {weirdhistory|crimeledger|mindtactics}"
   echo ""
   echo "Channel rotation:"
-  echo "  Mon = weirdhistory  (25 scenes, 25 min)"
-  echo "  Wed = crimeledger   (18 scenes, 18 min)"
-  echo "  Fri = mindtactics   (15 scenes, 15 min)"
+echo "  Mon = weirdhistory  (25 scenes, 5 min)"
+echo "  Wed = crimeledger   (18 scenes, 3.6 min)"
+echo "  Fri = mindtactics   (15 scenes, 3 min)"
   exit 1
 fi
 
@@ -24,8 +24,8 @@ echo "Step 2: Generate script ($CHANNEL)..."
 python3 scripts/generate_script.py
 
 echo ""
-echo "Step 3: Fetch assets..."
-python3 scripts/fetch_assets.py
+echo "Step 3: Generate AI assets..."
+python3 scripts/generate_assets.py
 
 echo ""
 echo "Step 4: Generate TTS audio..."
