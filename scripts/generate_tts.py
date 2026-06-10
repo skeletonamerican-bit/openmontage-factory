@@ -1,62 +1,120 @@
-import json
-import os
-import subprocess
-import sys
+import json, os, subprocess, sys, numpy as np
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
-VOICE_SPEAKERS = {
-    "twistedtruths": "0",
-    "crimeledger": "0",
-    "mindtactics": "0",
+VOICE_MAP = {
+    "weirdhistory": "af_heart",
+    "crimeledger": "am_adam",
+    "mindtactics": "af_bella",
 }
 
+FALLBACK_VOICES = {
+    "weirdhistory": "en_US-amy-medium",
+    "crimeledger": "en_US-joe-medium",
+    "mindtactics": "en_US-amy-medium",
+}
 
 def load_script(channel):
-    script_path = ROOT / "projects" / channel / "script.json"
+    script_path = Path("projects") / channel / "script.json"
     if not script_path.exists():
-        sys.exit(f"ERROR: Script file not found: {script_path}")
+        sys.exit(f"ERROR: {script_path}")
     return json.loads(script_path.read_text(encoding="utf-8"))
 
+def try_kokoro(text, out_path, voice):
+    try:
+        import kokoro
+        from kokoro import KPipeline
+        import soundfile as sf
+        pipeline = KPipeline(lang_code="a")
+        audio_chunks = []
+        for gs, ps, audio in pipeline(text, voice=voice, speed=1.0):
+            audio_chunks.append(audio)
+        if audio_chunks:
+            combined = np.concatenate(audio_chunks)
+            sf.write(str(out_path), combined, 24000)
+            return True
+    except Exception as e:
+        print(f"  Kokoro failed: {e}")
+    return False
 
-def synthesize_with_espeak(text, output_path):
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
-        ["espeak", "-w", str(output_path), text],
-        check=True,
-        stderr=subprocess.DEVNULL,
-        timeout=30
-    )
+def try_piper(text, out_path, voice):
+    model_path = Path("models/piper/en_US-lessac-high.onnx")
+    if not model_path.exists():
+        print(f"  Piper model not found at {model_path}")
+        return False
+    try:
+        tmp = out_path.with_suffix(".tmp.wav")
+        cmd = f'echo "{text}" | piper --model {model_path} --output_file {tmp}'
+        result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
+        if result.returncode == 0 and tmp.exists():
+            subprocess.run([
+                "ffmpeg", "-y", "-i", str(tmp),
+                "-af", "loudnorm=I=-14:TP=-1:LRA=11",
+                "-ar", "44100", str(out_path)
+            ], capture_output=True, timeout=60)
+            tmp.unlink(missing_ok=True)
+            return True
+    except Exception as e:
+        print(f"  Piper failed: {e}")
+    return False
 
+def try_espeak(text, out_path):
+    try:
+        subprocess.run([
+            "espeak-ng", "-w", str(out_path),
+            "-s", "145", "-p", "45", "-a", "180", text
+        ], check=True, capture_output=True, timeout=60)
+        return True
+    except Exception as e:
+        print(f"  espeak failed: {e}")
+    return False
+
+def normalize_audio(src, dst):
+    subprocess.run([
+        "ffmpeg", "-y", "-i", str(src),
+        "-af", "atrim=start=0.05,loudnorm=I=-14:TP=-1:LRA=11",
+        "-ar", "44100", str(dst)
+    ], capture_output=True, check=True, timeout=120)
 
 def main():
-    channel = os.getenv("CHANNEL")
+    channel = os.getenv("CHANNEL", "").strip()
     if not channel:
-        sys.exit("ERROR: Missing CHANNEL environment variable")
+        sys.exit("ERROR: CHANNEL not set")
 
     script = load_script(channel)
-    output_dir = ROOT / "projects" / channel / "audio"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = Path("projects") / channel / "audio"
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    for scene in script.get("scenes", []):
-        scene_id = scene.get("id")
-        if scene_id is None:
-            print("WARNING: skipping scene without id")
+    kokoro_voice = VOICE_MAP.get(channel, "af_heart")
+    scenes = script.get("scenes", [])
+    print(f"Channel: {channel} | Kokoro voice: {kokoro_voice} | {len(scenes)} scenes")
+
+    for scene in scenes:
+        sid = scene.get("id")
+        text = str(scene.get("narration", "")).strip()
+        if not sid or not text:
+            print(f"  SKIP scene {sid}: no narration")
             continue
-        narration = str(scene.get("narration", "")).strip()
-        if not narration:
-            print(f"WARNING: skipping scene {scene_id} with empty narration")
+        final = out_dir / f"{sid}.wav"
+        if final.exists():
+            print(f"  SKIP {sid} (exists)")
             continue
-
-        output_path = output_dir / f"{scene_id}.wav"
-        if output_path.exists():
-            print(f"Skipping existing audio: {output_path}")
+        print(f"  Scene {sid}...", end=" ", flush=True)
+        raw = out_dir / f"{sid}_raw.wav"
+        ok = try_kokoro(text, raw, kokoro_voice)
+        if not ok:
+            ok = try_piper(text, raw, kokoro_voice)
+        if not ok:
+            ok = try_espeak(text, raw)
+        if not ok:
+            print("FAILED all TTS engines")
             continue
+        normalize_audio(raw, final)
+        raw.unlink(missing_ok=True)
+        kb = final.stat().st_size // 1024
+        print(f"OK ({kb}KB)")
 
-        print(f"Synthesizing scene {scene_id}")
-        synthesize_with_espeak(narration, output_path)
-        print(f"Saved audio: {output_path}")
-
+    wavs = list(out_dir.glob("*.wav"))
+    print(f"\nDone: {len(wavs)}/{len(scenes)} audio files generated")
 
 if __name__ == "__main__":
     main()

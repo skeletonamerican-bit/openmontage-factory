@@ -1,13 +1,13 @@
 {
   "channels": [
+    "weirdhistory",
     "crimeledger",
-    "mindtactics",
-    "twistedtruths"
+    "mindtactics"
   ],
-  "last_channel": "crimeledger",
+  "last_channel": "mindtactics",
   "next_topic_index": {
+    "weirdhistory": 0,
     "crimeledger": 2,
-    "mindtactics": 1,
-    "twistedtruths": 1
+    "mindtactics": 2
   }
 }

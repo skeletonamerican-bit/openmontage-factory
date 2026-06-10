@@ -21,7 +21,7 @@ from pathlib import Path
 import shlex
 
 WORKDIR = Path.cwd()
-CHANNELS = ["twisted-truths-ep1", "crimeledger", "mindtactics"]
+CHANNELS = ["weirdhistory", "crimeledger", "mindtactics"]
 FPS = 24
 
 KEYWORD_YELLOW = ["money","salary","million","billion","company","contract","account"]

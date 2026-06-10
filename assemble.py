@@ -2,7 +2,7 @@
 import subprocess, json
 from pathlib import Path
 
-PROJ    = Path("/workspaces/OpenMontage/projects/twisted-truths-ep1")
+PROJ    = Path("/workspaces/OpenMontage/projects/weirdhistory")
 AUDIO   = PROJ / "audio"
 FOOTAGE = PROJ / "footage"
 MUSIC   = PROJ / "music" / "background.mp3"
@@ -67,7 +67,7 @@ subprocess.run([
 print(f"  Merged: {merged.stat().st_size//1024//1024}MB")
 
 print("\n[3/3] Adding background music...")
-final = RENDER / "FINAL_twisted-truths-ep1.mp4"
+final = RENDER / "FINAL_weirdhistory.mp4"
 subprocess.run([
     "ffmpeg", "-y", "-loglevel", "error",
     "-i", str(merged),

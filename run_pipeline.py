@@ -10,7 +10,7 @@ load_dotenv()
 
 # ── Paths ──────────────────────────────────────────────
 BASE    = Path("/workspaces/OpenMontage")
-PROJ    = BASE / "projects/twisted-truths-ep1"
+PROJ    = BASE / "projects/weirdhistory"
 AUDIO   = PROJ / "audio"
 FOOTAGE = PROJ / "footage"
 MUSIC   = PROJ / "music"

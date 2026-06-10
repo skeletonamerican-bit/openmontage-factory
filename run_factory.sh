@@ -1,30 +1,43 @@
 #!/bin/bash
 set -euo pipefail
 
-echo "=== TWISTED TRUTHS FACTORY ==="
+CHANNEL="${1:-}"
+if [ -z "$CHANNEL" ]; then
+  echo "Usage: $0 {weirdhistory|crimeledger|mindtactics}"
+  echo ""
+  echo "Channel rotation:"
+  echo "  Mon = weirdhistory  (25 scenes, 25 min)"
+  echo "  Wed = crimeledger   (18 scenes, 18 min)"
+  echo "  Fri = mindtactics   (15 scenes, 15 min)"
+  exit 1
+fi
 
-echo "Step 1: Setup Kaggle..."
-python3 kaggle_setup.py || true
+echo "=== OPENMONTAGE FACTORY: $CHANNEL ==="
+echo ""
+echo "Step 1: Select topic..."
+python3 scripts/select_topic.py
+export CHANNEL
+export TOPIC="${TOPIC:-}"
 
-echo "Step 2: Wait for Kaggle (monitor)..."
-python3 -u -c 'import time; print("monitor placeholder")' || true
+echo ""
+echo "Step 2: Generate script ($CHANNEL)..."
+python3 scripts/generate_script.py
 
-echo "Step 3: Download assets..."
-# placeholder: real download handled by kaggle_setup.py
+echo ""
+echo "Step 3: Fetch assets..."
+python3 scripts/fetch_assets.py
 
-echo "Step 4: Assemble all videos..."
-python3 assemble_all.py || true
+echo ""
+echo "Step 4: Generate TTS audio..."
+python3 scripts/generate_tts.py
 
-echo "Step 5: Verify outputs..."
-python3 - <<'PY'
-import os
-for ch in ['projects/twisted-truths-ep1/render','projects/crimeledger/render','projects/mindtactics/render']:
-    if os.path.exists(ch):
-        print(ch, 'exists, files:', len(os.listdir(ch)))
-    else:
-        print(ch, 'missing')
-PY
+echo ""
+echo "Step 5: Assemble video..."
+python3 assemble_v2.py
 
+echo ""
+echo "Step 6: Verify output..."
+ls -lh "projects/$CHANNEL/render/FINAL_v3.mp4" 2>/dev/null || echo "  WARNING: no output found"
+
+echo ""
 echo "=== DONE ==="
-ls -lh projects/*/render/FINAL*.mp4 || true
-ls -lh projects/*/render/thumbnail.jpg || true
