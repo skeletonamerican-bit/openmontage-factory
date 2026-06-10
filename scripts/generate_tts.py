@@ -32,14 +32,13 @@ def try_kokoro(text, out_path, voice):
             combined = np.concatenate(audio_chunks)
             sf.write(str(out_path), combined, 24000)
             return True
-    except Exception as e:
-        print(f"  Kokoro failed: {e}")
+    except Exception:
+        pass
     return False
 
 def try_piper(text, out_path, voice):
     model_path = Path("models/piper/en_US-lessac-high.onnx")
     if not model_path.exists():
-        print(f"  Piper model not found at {model_path}")
         return False
     try:
         tmp = out_path.with_suffix(".tmp.wav")
@@ -53,8 +52,8 @@ def try_piper(text, out_path, voice):
             ], capture_output=True, timeout=60)
             tmp.unlink(missing_ok=True)
             return True
-    except Exception as e:
-        print(f"  Piper failed: {e}")
+    except Exception:
+        pass
     return False
 
 def try_espeak(text, out_path):
@@ -64,8 +63,8 @@ def try_espeak(text, out_path):
             "-s", "145", "-p", "45", "-a", "180", text
         ], check=True, capture_output=True, timeout=60)
         return True
-    except Exception as e:
-        print(f"  espeak failed: {e}")
+    except Exception:
+        pass
     return False
 
 def normalize_audio(src, dst):

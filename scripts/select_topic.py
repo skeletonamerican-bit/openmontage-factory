@@ -1,72 +1,11 @@
 import json, os, sys
 from pathlib import Path
 
-TOPICS = {
-    "weirdhistory": [
-        "The Nazi Officer Who Saved 300 Jews and Was Executed",
-        "The Roman Emperor Who Was Actually a Mad Scientist",
-        "The Forgotten Pyramid Built by a Lost Civilization",
-        "The Witches of Scotland: The Last Witch Execution",
-        "The Alchemist Who Almost Found Immortality",
-        "The Ghost Ship That Vanished Without a Trace",
-        "The Cursed Pharaoh's Tomb That Killed Archaeologists",
-        "The Medieval Knight Who Fought a Hundred Duels",
-        "The Secret Society That Controlled Kings",
-        "The Plague Doctor Who Cured the Incurable",
-        "The Assassination Plot That Changed World History",
-        "The Library That Burned with All the World's Knowledge",
-        "The Emperor Who Tried to Stop Time",
-        "The Prisoner in the Iron Mask: The True Story",
-        "The Artist Who Faked Her Death and Started a Cult",
-        "The Cannibal Kingdom of the Amazon",
-        "The Doomsday Clock That Was Minutes from Midnight",
-        "The Underground City Built by Slaves",
-        "The Spy Who Stole the Atom Bomb Secrets",
-        "The Queen Who Ruled from Beyond the Grave",
-        "The Shipwreck Full of Gold That Was Never Found",
-        "The Mad King Who Built a Mechanical World",
-        "The Cult That Worshipped a False Prophet",
-        "The Genocide the World Refused to Believe",
-        "The Final Stand of the Last Samurai",
-    ],
-    "crimeledger": [
-        "The Ponzi Scheme That Robbed 40,000 Pensioners",
-        "The Hedge Fund Manager Who Faked His Own Death",
-        "The Banker Who Laundered for the Cartels",
-        "The CEO Who Ran a Billion Dollar Crypto Scam",
-        "The Art Forger Who Fooled the Louvre",
-        "The Diamond Heist That Bankrupted a Government",
-        "The Inside Trader Who Made Millions on Death",
-        "The Money Launderer Who Hid Cash in Paradise",
-        "The Identity Thief Who Stole a Senator's Life",
-        "The Jewel Thief Who Was Never Caught",
-        "The Whistleblower Who Took Down a Bank",
-        "The Tax Evader Who Built an Offshore Empire",
-        "The Fraud That Bankrupted an Entire Country",
-        "The Cybercriminal Who Stole from Central Banks",
-        "The Real Estate Scam That Left Thousands Homeless",
-        "The Insurance Fraud That Killed 40 People",
-        "The Forger Who Printed His Own Currency",
-        "The Smuggler Who Moved Gold Across Continents",
-    ],
-    "mindtactics": [
-        "The Psychology of the Puppet Master",
-        "Engineering Emotional Response",
-        "The Cognitive Bias Trap",
-        "Persuasion in the Digital Age",
-        "The Memory Manipulation Study",
-        "Influencing the Collective Mind",
-        "Decoding Subtle Body Language",
-        "Tactical Social Engineering",
-        "The Psychology of False Consensus",
-        "Mastering Digital Influence",
-        "The Dark Art of Gaslighting",
-        "How Narcissists Rewrite Reality",
-        "The Science of Brainwashing",
-        "The Cults That Controlled Their Members",
-        "The Power of Subliminal Messaging",
-    ],
-}
+TOPICS_FILE = Path("topics.json")
+if not TOPICS_FILE.exists():
+    sys.exit("ERROR: topics.json not found")
+
+TOPICS = json.loads(TOPICS_FILE.read_text(encoding="utf-8"))
 
 CHANNEL_ROTATION = ["weirdhistory", "crimeledger", "mindtactics"]
 
