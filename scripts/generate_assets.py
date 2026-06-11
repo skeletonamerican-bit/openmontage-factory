@@ -1,28 +1,30 @@
 """
-generate_assets.py — Kaggle GPU orchestration
+generate_assets.py — Kaggle GPU orchestration with dry-run, check, validation
 
-1. Reads script.json for CHANNEL
-2. Parses IMG1/IMG2/VID prompts from each scene
+1. Reads script.json for CHANNEL from projects/{CHANNEL}/script.json
+2. Parses scene visuals → scene_prompts.json
 3. Uploads scene_prompts.json to Kaggle dataset forts845/openmontage-prompts
-4. Triggers Kaggle kernel forts845/ltx-flux-runner
-5. Waits for completion (polls every 30s)
-6. Downloads footage/* to projects/{CHANNEL}/footage/
-7. Falls back to Pixabay stock footage if Kaggle fails
+4. Pushes kernel to forts845/openmontage-flux-ltx-runner
+5. Triggers the kernel run
+6. Polls status every 30s until complete or error
+7. Downloads output footage to projects/{CHANNEL}/footage/
+8. Validates downloaded files (MP4 > 100KB, JPG > 50KB)
 """
-import json, os, re, sys, time, subprocess, tempfile, requests
+import json, os, re, sys, time, subprocess, tempfile, requests, argparse
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-CHANNEL = os.getenv("CHANNEL")
+CHANNEL_ENV = os.getenv("CHANNEL", "")
 KAGGLE_USERNAME = os.getenv("KAGGLE_USERNAME", "forts845")
 KAGGLE_KEY = os.getenv("KAGGLE_KEY", "")
-KERNEL_ID = "forts845/ltx-flux-runner"
+KERNEL_ID = "forts845/openmontage-flux-ltx-runner"
 DATASET_ID = "forts845/openmontage-prompts"
+KAGGLE_DIR = ROOT / "kaggle"
 
 CHANNEL_STYLES = {
-    "weirdhistory": "historical archive photograph, 35mm film grain, Rembrandt lighting, chiaroscuro, amber candlelight, dark academia aesthetic",
-    "crimeledger": "crime scene documentary photo, cold blue steel lighting, Fincher aesthetic, dark green teal shadows, forensic",
-    "mindtactics": "psychological portrait, high contrast monochrome, single red accent, analog horror, VHS distortion aesthetic",
+    "weirdhistory": "historical archive photograph, 35mm film grain, Rembrandt lighting, chiaroscuro, amber candlelight, dark academia",
+    "crimeledger": "crime scene documentary, cold blue steel lighting, Fincher aesthetic, teal shadows, forensic atmosphere",
+    "mindtactics": "psychological portrait, high contrast monochrome, red accent color, analog horror, VHS distortion",
 }
 
 PIXABAY_KEY = os.getenv("PIXABAY_API_KEY", "")
@@ -70,8 +72,16 @@ def write_kaggle_json():
     kaggle_dir = Path.home() / ".kaggle"
     kaggle_dir.mkdir(parents=True, exist_ok=True)
     kaggle_json = kaggle_dir / "kaggle.json"
-    kaggle_json.write_text(json.dumps({"username": KAGGLE_USERNAME, "key": KAGGLE_KEY}))
+    creds = {"username": KAGGLE_USERNAME, "key": KAGGLE_KEY}
+    kaggle_json.write_text(json.dumps(creds))
     kaggle_json.chmod(0o600)
+
+
+def run_kaggle(cmd, desc=""):
+    env = os.environ.copy()
+    env.update({"KAGGLE_USERNAME": KAGGLE_USERNAME, "KAGGLE_KEY": KAGGLE_KEY})
+    r = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    return r
 
 
 def upload_prompts(scene_prompts):
@@ -88,58 +98,75 @@ def upload_prompts(scene_prompts):
             "licenses": [{"name": "Apache 2.0"}],
         }, indent=2))
 
-        env = os.environ.copy()
-        env.update({"KAGGLE_USERNAME": KAGGLE_USERNAME, "KAGGLE_KEY": KAGGLE_KEY})
-        r = subprocess.run(
-            ["kaggle", "datasets", "version", "-p", str(tmp), "-m", f"update {CHANNEL} prompts"],
-            capture_output=True, text=True, env=env,
+        r = run_kaggle(
+            ["kaggle", "datasets", "version", "-p", str(tmp),
+             "-m", f"update {CHANNEL_ENV} prompts", "--dir-mode", "zip"],
+            "dataset version upload"
         )
         if r.returncode != 0:
-            # maybe dataset doesn't exist yet — try create
-            r = subprocess.run(
-                ["kaggle", "datasets", "create", "-p", str(tmp), "-u"],
-                capture_output=True, text=True, env=env,
+            r = run_kaggle(
+                ["kaggle", "datasets", "create", "-p", str(tmp), "--dir-mode", "zip"],
+                "dataset create"
             )
             if r.returncode != 0:
                 print(f"Dataset upload failed:\n{r.stderr}")
                 return False
+
+        print("Verifying dataset status...")
+        r2 = run_kaggle(["kaggle", "datasets", "status", DATASET_ID], "dataset verify")
+        if "ready" not in r2.stdout.lower() and "ok" not in r2.stdout.lower():
+            print(f"Dataset verification failed: {r2.stdout}")
+            return False
         print("Dataset updated OK")
         return True
 
 
 def push_and_run_kernel():
     print("Pushing kernel to Kaggle...")
-    env = os.environ.copy()
-    env.update({"KAGGLE_USERNAME": KAGGLE_USERNAME, "KAGGLE_KEY": KAGGLE_KEY})
-    r = subprocess.run(
-        ["kaggle", "kernels", "push", "-p", str(ROOT / "kaggle")],
-        capture_output=True, text=True, env=env,
+    r = run_kaggle(
+        ["kaggle", "kernels", "push", "-p", str(KAGGLE_DIR)],
+        "kernel push"
     )
     if r.returncode != 0:
-        print(f"Kernel push failed:\n{r.stderr}")
+        stderr_lower = r.stderr.lower()
+        if "409" in stderr_lower or "conflict" in stderr_lower:
+            print("Kernel already exists (409 conflict) — trying push with -u flag...")
+            r = run_kaggle(
+                ["kaggle", "kernels", "push", "-p", str(KAGGLE_DIR)],
+                "kernel push retry"
+            )
+        if r.returncode != 0:
+            print(f"Kernel push failed:\n{r.stderr}")
+            return False
+    print("Verifying kernel version...")
+    r2 = run_kaggle(["kaggle", "kernels", "status", KERNEL_ID], "kernel verify")
+    if "complete" not in r2.stdout.lower() and "running" not in r2.stdout.lower() and "queued" not in r2.stdout.lower():
+        print(f"Kernel verification failed: {r2.stdout}")
         return False
-    print("Kernel pushed OK — T4 GPU run starting")
+    print(f"Kernel pushed OK — T4 GPU run starting")
     return True
 
 
 def wait_for_kernel(max_wait=3600):
     print("Waiting for Kaggle T4 GPU (polling every 30s)...")
-    env = os.environ.copy()
-    env.update({"KAGGLE_USERNAME": KAGGLE_USERNAME, "KAGGLE_KEY": KAGGLE_KEY})
     start = time.time()
     while time.time() - start < max_wait:
-        r = subprocess.run(
-            ["kaggle", "kernels", "status", KERNEL_ID],
-            capture_output=True, text=True, env=env,
-        )
-        status = r.stdout.strip()
+        r = run_kaggle(["kaggle", "kernels", "status", KERNEL_ID], "kernel status")
+        raw = r.stdout.strip()
+        status = raw.lower()
         elapsed = int(time.time() - start)
-        print(f"  [{elapsed}s] Status: {status}")
-        if "complete" in status.lower():
+        if '"queued"' in status:
+            print(f"  [{elapsed}s] Status: queued (waiting in line)")
+        elif '"running"' in status:
+            print(f"  [{elapsed}s] Status: running (T4 GPU active)")
+        elif '"complete"' in status:
+            print(f"  [{elapsed}s] Status: complete!")
             return True
-        if "error" in status.lower() or "cancel" in status.lower():
-            print("  Kernel failed!")
+        elif '"error"' in status or '"cancel"' in status:
+            print(f"  [{elapsed}s] Status: error/failed!")
             return False
+        else:
+            print(f"  [{elapsed}s] Status: {raw}")
         time.sleep(30)
     print("  Timeout reached")
     return False
@@ -148,29 +175,88 @@ def wait_for_kernel(max_wait=3600):
 def download_outputs(channel):
     dest = ROOT / "projects" / channel / "footage"
     dest.mkdir(parents=True, exist_ok=True)
-    env = os.environ.copy()
-    env.update({"KAGGLE_USERNAME": KAGGLE_USERNAME, "KAGGLE_KEY": KAGGLE_KEY})
-    r = subprocess.run(
+    r = run_kaggle(
         ["kaggle", "kernels", "output", KERNEL_ID, "-p", str(dest)],
-        capture_output=True, text=True, env=env,
+        "kernel output download"
     )
     if r.returncode != 0:
         print(f"Download failed:\n{r.stderr}")
         return []
-    files = list(dest.iterdir())
-    print(f"Downloaded {len(files)} files")
-    for f in sorted(files):
-        kb = f.stat().st_size // 1024 if f.is_file() else 0
+    files = sorted(dest.iterdir())
+    if not files:
+        print("No files downloaded")
+        return []
+    print(f"Downloaded {len(files)} files:")
+    valid = True
+    for f in files:
+        if not f.is_file():
+            continue
+        kb = f.stat().st_size // 1024
         print(f"  {f.name} ({kb}KB)")
+        ext = f.suffix.lower()
+        if ext == ".mp4" and kb < 100:
+            print(f"    WARNING: MP4 < 100KB, may be corrupt")
+            valid = False
+        elif ext == ".jpg" and kb < 50:
+            print(f"    WARNING: JPG < 50KB, may be corrupt")
+            valid = False
+    if not valid:
+        sys.exit("ERROR: Downloaded file validation failed")
     return files
 
 
-def pixabay_fallback(channel, scenes):
-    print("\n=== Pixabay stock footage fallback ===")
+def extract_visual_from_prompt(raw_prompt, channel):
+    style = CHANNEL_STYLES.get(channel, "")
+    clean = re.sub(r'\[SFX:[^\]]*\]', '', raw_prompt)
+    clean = re.sub(r'color_note:[^\n]*', '', clean)
+    clean = re.sub(r'\s+', ' ', clean).strip()
+    if style:
+        return f"{style}, {clean}"
+    return clean
+
+
+def build_scene_prompts(scenes, channel):
+    style = CHANNEL_STYLES.get(channel, "")
+    build_prompts = []
+    for scene in scenes:
+        scene_id = scene.get("id")
+        if not scene_id:
+            continue
+        img1, img2, vid = parse_visual_prompts(scene)
+        raw_visual = str(scene.get("visual") or scene.get("title", ""))
+        if not img1:
+            img1 = extract_visual_from_prompt(raw_visual, channel)
+        elif style:
+            img1 = f"{style}, {img1}"
+        if not img2:
+            img2 = img1
+        elif img2 != img1 and style:
+            img2 = f"{style}, {img2}"
+        if not vid:
+            vid = img1
+        elif vid != img1 and style:
+            vid = f"{style}, {vid}"
+        build_prompts.append({
+            "id": scene_id,
+            "title": scene.get("title", ""),
+            "img1_prompt": img1,
+            "img2_prompt": img2,
+            "vid_prompt": vid,
+        })
+    return build_prompts
+
+
+def pixabay_fallback(channel, scenes, test_mode=False):
+    if test_mode:
+        print(f"\n=== Dry-run: Generating {min(3, len(scenes))} test scenes using Pixabay fallback ===")
+    else:
+        print("\n=== Pixabay stock footage fallback ===")
     dest = ROOT / "projects" / channel / "footage"
     dest.mkdir(parents=True, exist_ok=True)
 
-    for scene in scenes:
+    test_scenes = scenes[:3] if test_mode else scenes
+
+    for scene in test_scenes:
         scene_id = scene.get("id")
         if not scene_id:
             continue
@@ -188,11 +274,31 @@ def pixabay_fallback(channel, scenes):
             _fetch_pixabay_video(prompt, video)
 
     count = len(list(dest.glob("*")))
-    print(f"Fallback complete: {count} assets in {dest}")
+    print(f"Done: {count} assets in {dest}")
+
+    if test_mode:
+        valid = True
+        for f in dest.iterdir():
+            if not f.is_file():
+                continue
+            kb = f.stat().st_size // 1024
+            ext = f.suffix.lower()
+            print(f"  {f.name} ({kb}KB)")
+            if ext == ".mp4" and kb < 100:
+                print(f"    WARNING: MP4 < 100KB")
+                valid = False
+            elif ext == ".jpg" and kb < 50:
+                print(f"    WARNING: JPG < 50KB")
+                valid = False
+        if valid:
+            print("Dry-run test PASSED")
+        else:
+            sys.exit("Dry-run test FAILED")
 
 
 def _fetch_pixabay_image(query, dest_path, seed):
     if not PIXABAY_KEY:
+        print(f"  Pixabay image {dest_path.name}: SKIP (no API key)")
         return
     if dest_path.exists():
         return
@@ -217,6 +323,7 @@ def _fetch_pixabay_image(query, dest_path, seed):
 
 def _fetch_pixabay_video(query, dest_path):
     if not PIXABAY_KEY:
+        print(f"  Pixabay video {dest_path.name}: SKIP (no API key)")
         return
     if dest_path.exists():
         return
@@ -245,61 +352,88 @@ def _fetch_pixabay_video(query, dest_path):
         print(f"    FAILED: {e}")
 
 
+def cmd_check():
+    """--check: show status of last kernel run"""
+    print(f"Checking kernel status: {KERNEL_ID}")
+    r = run_kaggle(["kaggle", "kernels", "status", KERNEL_ID], "check status")
+    if r.returncode != 0:
+        print(f"Status check failed: {r.stderr}")
+        sys.exit(1)
+    print(f"Kernel: {KERNEL_ID}")
+    print(f"Status: {r.stdout.strip()}")
+    r2 = run_kaggle(["kaggle", "kernels", "list", "--mine", "-p", "1"],
+                     "list kernels")
+    if r2.returncode == 0:
+        print(f"\nRecent kernels:\n{r2.stdout}")
+
+
 def main():
-    if not CHANNEL:
-        sys.exit("ERROR: CHANNEL not set")
-    if not KAGGLE_KEY:
-        print("WARNING: KAGGLE_KEY not set — skipping Kaggle, using Pixabay fallback")
-        script = load_script(CHANNEL)
-        pixabay_fallback(CHANNEL, script.get("scenes", []))
+    parser = argparse.ArgumentParser(description="Generate assets via Kaggle GPU")
+    parser.add_argument("--channel", default=CHANNEL_ENV,
+                        help="Channel name (weirdhistory/crimeledger/mindtactics)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Skip Kaggle, generate 3 test scenes via Pixabay fallback")
+    parser.add_argument("--check", action="store_true",
+                        help="Check status of last kernel run only")
+    args = parser.parse_args()
+
+    channel = args.channel or CHANNEL_ENV
+
+    if args.check:
+        cmd_check()
         return
 
-    script = load_script(CHANNEL)
+    if args.dry_run:
+        if not channel:
+            sys.exit("ERROR: --channel required with --dry-run")
+        script = load_script(channel)
+        scenes = script.get("scenes", [])
+        print(f"DRY-RUN: {channel} ({min(3, len(scenes))} test scenes)")
+        build_prompts = build_scene_prompts(scenes, channel)
+        scene_prompts = {"channel": channel, "scenes": build_prompts}
+        prompt_path = ROOT / "projects" / channel / "scene_prompts.json"
+        prompt_path.write_text(json.dumps(scene_prompts, ensure_ascii=False, indent=2))
+        print(f"Wrote {prompt_path}")
+        pixabay_fallback(channel, scenes, test_mode=True)
+        return
+
+    if not channel:
+        sys.exit("ERROR: CHANNEL not set (use --channel or CHANNEL env var)")
+    if not KAGGLE_KEY:
+        print("WARNING: KAGGLE_KEY not set — skipping Kaggle, using Pixabay fallback")
+        script = load_script(channel)
+        pixabay_fallback(channel, script.get("scenes", []))
+        return
+
+    script = load_script(channel)
     scenes = script.get("scenes", [])
-    print(f"Generate assets for {CHANNEL}: {len(scenes)} scenes")
+    print(f"Generate assets for {channel}: {len(scenes)} scenes")
 
-    build_prompts = []
-    for scene in scenes:
-        scene_id = scene.get("id")
-        if not scene_id:
-            continue
-        img1, img2, vid = parse_visual_prompts(scene)
-        if not img1:
-            img1 = str(scene.get("title", ""))
-        if not img2:
-            img2 = img1
-        if not vid:
-            vid = img1
-        build_prompts.append({
-            "id": scene_id,
-            "title": scene.get("title", ""),
-            "img1_prompt": img1,
-            "img2_prompt": img2,
-            "vid_prompt": vid,
-        })
-
-    scene_prompts = {
-        "channel": CHANNEL,
-        "scenes": build_prompts,
-    }
+    build_prompts = build_scene_prompts(scenes, channel)
+    scene_prompts = {"channel": channel, "scenes": build_prompts}
 
     write_kaggle_json()
+
     ok = upload_prompts(scene_prompts)
+    if not ok:
+        sys.exit("ERROR: Dataset upload failed")
 
-    if ok:
-        ok = push_and_run_kernel()
+    ok = push_and_run_kernel()
+    if not ok:
+        sys.exit("ERROR: Kernel push failed")
 
-    if ok:
-        ok = wait_for_kernel()
+    ok = wait_for_kernel()
+    if not ok:
+        sys.exit("ERROR: Kernel run failed or timed out")
 
-    if ok:
-        files = download_outputs(CHANNEL)
-        if files:
-            print(f"\nSuccess: {len(files)} assets downloaded")
-            return
+    files = download_outputs(channel)
+    if not files:
+        sys.exit("ERROR: No files downloaded")
 
-    print("\nKaggle pipeline failed — falling back to Pixabay stock footage")
-    pixabay_fallback(CHANNEL, scenes)
+    print(f"\nSuccess: {len(files)} assets validated in projects/{channel}/footage/")
+
+    if ok and files:
+        print("All validations passed — proceeding to next pipeline stage")
 
 
 if __name__ == "__main__":
