@@ -22,10 +22,11 @@ CHANNEL_STYLES = {
 
 
 def install_deps():
+    subprocess.run(["pip", "install", "-q", "torch==2.1.0", "torchvision", "--index-url", "https://download.pytorch.org/whl/cu118"], check=True)
     deps = [
-        "diffusers>=0.31.0", "transformers", "accelerate",
-        "torch", "torchvision", "imageio[ffmpeg]", "sentencepiece",
-        "protobuf",
+        "diffusers==0.30.3", "transformers", "accelerate",
+        "imageio[ffmpeg]", "sentencepiece", "protobuf",
+        "mistune==2.0.5",
     ]
     subprocess.run(["pip", "install", "-q"] + deps, check=True)
 
@@ -39,7 +40,15 @@ def load_prompts():
         if p.exists():
             with open(p) as f:
                 return json.load(f)
-    sys.exit("ERROR: scene_prompts.json not found")
+    print("WARNING: scene_prompts.json not found — generating default test prompts")
+    default_scenes = [
+        {"id": 1, "title": "The Lost City of Atlantis", "img1_prompt": "ruined columns underwater, sunbeams filtering through, ancient stone carvings, deep ocean", "img2_prompt": "aerial view of geometric patterns on ocean floor, sonar mapping visualization", "vid_prompt": "slow reveal of underwater ruins, particles drifting in light beams, mysterious atmosphere"},
+        {"id": 2, "title": "Medieval Alchemist's Workshop", "img1_prompt": "cluttered stone workshop with glass vials, bubbling liquids, candlelight, aged manuscripts", "img2_prompt": "close-up of alchemist's hands holding glowing potion, dust particles in light beam", "vid_prompt": "candle flames flicker as liquid bubbles in flask, steam rises, magical atmosphere"},
+        {"id": 3, "title": "Forgotten Soviet Space Program", "img1_prompt": "abandoned rocket silo overgrown with moss, faded hammer and sickle, industrial decay", "img2_prompt": "retro Soviet space poster peeling on concrete wall, cold war aesthetic", "vid_prompt": "camera pans across abandoned control room, dust motes in dim light, eerie silence"},
+        {"id": 4, "title": "The Phantom Clockmaker", "img1_prompt": "dusty clockmaker shop filled with antique timepieces, cobwebs, single lantern glow", "img2_prompt": "close-up of intricate clockwork mechanism, brass gears, precision engineering, vintage", "vid_prompt": "clock pendulums swing in slow motion, shadows flicker, gears turn with creaking sound"},
+        {"id": 5, "title": "Library of Babel", "img1_prompt": "infinite hexagonal library, bookshelves stretching to vanishing point, warm amber light", "img2_prompt": "ancient leather-bound book open on reading desk, ornate illustrations, candle beside", "vid_prompt": "slow dolly zoom through endless bookshelves, pages flutter, dust dances in light"},
+    ]
+    return {"channel": "weirdhistory", "scenes": default_scenes}
 
 
 def make_flux_image(pipe, prompt, out_path, scene_id):

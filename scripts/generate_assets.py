@@ -86,39 +86,64 @@ def run_kaggle(cmd, desc=""):
 
 def upload_prompts(scene_prompts):
     print("Uploading scene_prompts.json to Kaggle dataset...")
-    with tempfile.TemporaryDirectory() as td:
-        tmp = Path(td)
-        prompt_file = tmp / "scene_prompts.json"
-        prompt_file.write_text(json.dumps(scene_prompts, ensure_ascii=False, indent=2))
+    upload_dir = Path("/tmp/kaggle_upload")
+    upload_dir.mkdir(parents=True, exist_ok=True)
 
-        metadata = tmp / "dataset-metadata.json"
-        metadata.write_text(json.dumps({
-            "id": DATASET_ID,
-            "title": "OpenMontage Prompts",
-            "licenses": [{"name": "Apache 2.0"}],
-        }, indent=2))
+    # Clean folder — must contain ONLY scene_prompts.json
+    for f in upload_dir.iterdir():
+        if f.is_file():
+            f.unlink()
 
+    prompt_file = upload_dir / "scene_prompts.json"
+    prompt_file.write_text(json.dumps(scene_prompts, ensure_ascii=False, indent=2))
+
+    r = run_kaggle(
+        ["kaggle", "datasets", "version", "-p", str(upload_dir),
+         "--dir-mode", "zip", "-m", "update"],
+        "dataset version upload"
+    )
+    if r.returncode != 0:
         r = run_kaggle(
-            ["kaggle", "datasets", "version", "-p", str(tmp),
-             "-m", f"update {CHANNEL_ENV} prompts", "--dir-mode", "zip"],
-            "dataset version upload"
+            ["kaggle", "datasets", "create", "-p", str(upload_dir), "--dir-mode", "zip"],
+            "dataset create"
         )
         if r.returncode != 0:
-            r = run_kaggle(
-                ["kaggle", "datasets", "create", "-p", str(tmp), "--dir-mode", "zip"],
-                "dataset create"
-            )
-            if r.returncode != 0:
-                print(f"Dataset upload failed:\n{r.stderr}")
-                return False
-
-        print("Verifying dataset status...")
-        r2 = run_kaggle(["kaggle", "datasets", "status", DATASET_ID], "dataset verify")
-        if "ready" not in r2.stdout.lower() and "ok" not in r2.stdout.lower():
-            print(f"Dataset verification failed: {r2.stdout}")
+            print(f"Dataset upload failed:\n{r.stderr}")
             return False
-        print("Dataset updated OK")
-        return True
+
+    print("Waiting 10s for dataset to propagate...")
+    time.sleep(10)
+
+    # Verify file exists in dataset before pushing kernel
+    print("Verifying scene_prompts.json in dataset...")
+    verify_dir = Path("/tmp/kaggle_verify")
+    verify_dir.mkdir(parents=True, exist_ok=True)
+    r2 = run_kaggle(
+        ["kaggle", "datasets", "download", DATASET_ID, "-p", str(verify_dir), "--force", "--quiet"],
+        "dataset download verify"
+    )
+    if r2.returncode == 0:
+        zips = list(verify_dir.glob("*.zip"))
+        found = False
+        if zips:
+            import zipfile
+            with zipfile.ZipFile(zips[0]) as zf:
+                found = any("scene_prompts.json" in n for n in zf.namelist())
+        else:
+            found = (verify_dir / "scene_prompts.json").exists()
+        if not found:
+            print("ERROR: scene_prompts.json not found in downloaded dataset")
+            return False
+        print("scene_prompts.json verified in dataset")
+    else:
+        r3 = run_kaggle(["kaggle", "datasets", "status", DATASET_ID], "dataset status verify")
+        if "ready" not in r3.stdout.lower() and "ok" not in r3.stdout.lower():
+            print(f"Dataset verification failed: {r3.stdout}")
+            return False
+        print("Dataset status verified (file existence check via download skipped)")
+
+    print("Dataset updated OK")
+    return True
 
 
 def push_and_run_kernel():
