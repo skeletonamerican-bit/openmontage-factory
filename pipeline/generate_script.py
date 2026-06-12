@@ -7,9 +7,9 @@ def generate_script(channel, topic):
     router = LLMRouter()
 
     if TEST_MODE:
-        return _mock_script(channel, topic, cfg)
+        return _mock_script(channel, topic, cfg, num_scenes=TEST_MODE if isinstance(TEST_MODE, int) else 1)
 
-    num_scenes = 1 if TEST_MODE else cfg["scenes"]
+    num_scenes = cfg["scenes"]
     style = cfg["style"]
 
     system_prompt = """You are a professional video scriptwriter. Generate a structured script for a faceless YouTube video.
@@ -36,6 +36,12 @@ Topic: {topic}
 Number of scenes: {num_scenes}
 Visual style: {style}
 
+IMPORTANT: Scene 0 is the HOOK — the very first scene. It must grab attention immediately.
+For scene 0:
+  video_prompt must include: "dramatic reveal, extreme close-up, high contrast, shocking moment, cinematic opener" combined with the channel's visual style
+  narration must be a gripping question or shocking fact that hooks the viewer
+  Mark scene 0 with HOOK=True
+
 Generate a complete script as a JSON array of scene objects."""
 
     raw = router.call(system_prompt, user_prompt)
@@ -51,19 +57,24 @@ Generate a complete script as a JSON array of scene objects."""
     if not isinstance(script, list):
         raise ValueError(f"Script must be a list, got {type(script)}")
 
-    if TEST_MODE:
-        script = script[:1]
+    if script and isinstance(script[0], dict):
+        style = cfg["style"]
+        script[0]["video_prompt"] = f"dramatic reveal, extreme close-up, high contrast, shocking moment, cinematic opener, {style}"
+        script[0]["HOOK"] = True
 
     return script
 
 
-def _mock_script(channel, topic, cfg):
-    return [
-        {
-            "scene": 1,
-            "narration": f"This is a test video for {channel} about {topic}. The following scenes will explore this fascinating topic in depth.",
+def _mock_script(channel, topic, cfg, num_scenes=1):
+    results = []
+    for i in range(num_scenes):
+        results.append({
+            "scene": i,
+            "narration": f"This is scene {i+1} of {num_scenes} for {channel} about {topic}. The following scenes will explore this fascinating topic in depth." if i > 0 else f"Did you know that {topic} hides a truth most people never see? This is {channel}.",
+            "video_prompt": f"dramatic reveal, extreme close-up, high contrast, shocking moment, cinematic opener, {cfg['style']}, {topic}" if i == 0 else f"{cfg['style']}, {topic} scene {i+1}, cinematic lighting",
             "image_prompt": f"{cfg['style']}, {topic} concept art, cinematic lighting",
             "image_style": cfg["style"],
             "keywords": [topic, channel, "documentary"],
-        }
-    ]
+            "HOOK": True if i == 0 else False,
+        })
+    return results

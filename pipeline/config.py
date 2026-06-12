@@ -2,7 +2,7 @@ import os, json
 
 CHANNELS = {
     "weirdhistory": {
-        "scenes": 25,
+        "scenes": 84,
         "voice": "am_michael",
         "edge_voice": "en-US-GuyNeural",
         "style": "chiaroscuro lighting, 35mm film grain, dark medieval, candlelight, gothic architecture, historical archive photo style, amber shadows, ultra detailed",
@@ -11,7 +11,7 @@ CHANNELS = {
         "music_bpm": 70,
     },
     "crimeledger": {
-        "scenes": 18,
+        "scenes": 72,
         "voice": "am_adam",
         "edge_voice": "en-US-GuyNeural",
         "style": "Fincher aesthetic, cold blue teal grade, forensic overhead lighting, crime scene documentation, desaturated, sharp focus, ultra detailed",
@@ -20,7 +20,7 @@ CHANNELS = {
         "music_bpm": 80,
     },
     "mindtactics": {
-        "scenes": 15,
+        "scenes": 60,
         "voice": "af_bella",
         "edge_voice": "en-US-JennyNeural",
         "style": "analog horror photography, VHS artifact texture, monochrome with red accent, deep shadows, psychological thriller, claustrophobic framing, ultra detailed",
@@ -51,7 +51,13 @@ KAGGLE_USERNAME = os.environ.get("KAGGLE_USERNAME", "forts845")
 KAGGLE_KERNEL = f"{KAGGLE_USERNAME}/openmontage-sana-ltx-runner"
 PIXABAY_API_KEY = os.environ.get("PIXABAY_API_KEY", "")
 
-TEST_MODE = os.environ.get("TEST_MODE") == "1"
+_test_mode_env = os.environ.get("TEST_MODE", "")
+if _test_mode_env and _test_mode_env.isdigit():
+    TEST_MODE = int(_test_mode_env)
+elif _test_mode_env:
+    TEST_MODE = True
+else:
+    TEST_MODE = False
 
 def get_channel_config(channel):
     return CHANNELS.get(channel, CHANNELS["weirdhistory"])
