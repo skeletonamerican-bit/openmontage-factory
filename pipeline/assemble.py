@@ -1,6 +1,7 @@
 import os, json, subprocess, math, shutil
 from pathlib import Path
-from config import get_channel_config, SCENE_DUR, PHOTO_DUR, VIDEO_DUR, FPS, RESOLUTION, CRF, AUDIO_BITRATE, TEST_MODE
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from config import get_channel_config, SCENE_DUR, PHOTO_DUR, VIDEO_DUR, FPS, RESOLUTION, CRF, AUDIO_BITRATE, TEST_MODE, PHOTO_COUNT
 
 FONT_PATH = "/tmp/fonts/Montserrat/static/Montserrat-ExtraBold.ttf"
 OUTPUT_DIR = Path("output")
@@ -19,63 +20,68 @@ def assemble_video(channel, script, assets, tts):
     cfg = get_channel_config(channel)
     scenes = script if isinstance(script, list) else script.get("scenes", script)
     audio_files = tts.get("audio_files", [])
-    images = assets.get("images", [])
-    videos = assets.get("videos", [])
+    scene_assets = assets.get("scene_assets", {})
     music_path = assets.get("music")
 
     is_test = bool(TEST_MODE)
     scene_dur = 8 if is_test else SCENE_DUR
-    frame_count = 3
+    frame_count = PHOTO_COUNT
     frame_durs = _frame_durations(scene_dur, frame_count)
 
-    num_scenes = len(scenes)
-    last_act_scene = num_scenes // 3 - 1
-    second_act_scene = 2 * num_scenes // 3 - 1
-    last_scene = num_scenes - 1
+    n = len(scenes)
+    last_act_scene = n // 3 - 1
+    second_act_scene = 2 * n // 3 - 1
+    last_scene = n - 1
 
     frames_dir = OUTPUT_DIR / "frames"
     if frames_dir.exists():
         shutil.rmtree(frames_dir)
     frames_dir.mkdir(parents=True)
 
+    def _run_frame_task(func, args):
+        func(*args)
+
+    tasks = []
     frame_paths = []
     cut_timestamps = []
-    current_time = 0.0
+    t = 0.0
 
-    for si, scene in enumerate(scenes):
-        vid_path = videos[si] if si < len(videos) and videos[si] and os.path.exists(videos[si]) else None
-        img_path = images[si] if si < len(images) and images[si] and os.path.exists(images[si]) else None
+    for si in range(n):
+        sa = scene_assets.get(si, {})
+        photos = sa.get("photos", [])
+        vid_path = sa.get("video") if sa.get("video") and os.path.exists(sa["video"]) else None
 
         for fi in range(frame_count):
             fd = frame_durs[fi]
-            out_path = frames_dir / f"scene_{si:03d}_frame{fi}.mp4"
+            out = frames_dir / f"scene_{si:03d}_frame{fi}.mp4"
 
             if fi == 0 and vid_path:
-                _make_video_frame(vid_path, fd, out_path)
-            elif fi > 0 and img_path:
-                ken_burns = _ken_burns_params(si, fi)
-                _make_ken_burns_frame(img_path, fd, ken_burns, out_path)
-            elif img_path:
-                _make_still_frame(img_path, fd, out_path)
+                tasks.append((_make_video_frame, (vid_path, fd, out)))
+            elif fi < len(photos):
+                tasks.append((_make_ken_burns_frame, (photos[fi], fd, _ken_burns_params(si, fi), out)))
             else:
-                _make_color_frame(fd, out_path)
+                tasks.append((_make_color_frame, (fd, out)))
 
-            is_last_act_frame = (si == last_act_scene or si == second_act_scene or si == last_scene) and fi == frame_count - 1
-            if is_last_act_frame:
-                faded_path = frames_dir / f"scene_{si:03d}_frame{fi}_faded.mp4"
-                _fade_out(str(out_path), str(faded_path), fd)
-                out_path = Path(faded_path)
+            is_last = (si in (last_act_scene, second_act_scene, last_scene)) and fi == frame_count - 1
+            if is_last:
+                faded = frames_dir / f"scene_{si:03d}_frame{fi}_faded.mp4"
+                tasks.append((_fade_out, (str(out), str(faded), fd)))
+                out = faded
 
-            is_first_act_frame = (si == last_act_scene + 1 or si == second_act_scene + 1) and fi == 0
-            if is_first_act_frame:
-                faded_path = frames_dir / f"scene_{si:03d}_frame{fi}_faded_in.mp4"
-                _fade_in(str(out_path), str(faded_path), fd)
-                out_path = Path(faded_path)
+            is_first = (si in (last_act_scene + 1, second_act_scene + 1)) and fi == 0
+            if is_first:
+                faded = frames_dir / f"scene_{si:03d}_frame{fi}_faded_in.mp4"
+                tasks.append((_fade_in, (str(out), str(faded), fd)))
+                out = faded
 
-            frame_paths.append(str(out_path))
-            if current_time > 0:
-                cut_timestamps.append(current_time)
-            current_time += fd
+            frame_paths.append(str(out))
+            if t > 0:
+                cut_timestamps.append(t)
+            t += fd
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        for f in as_completed([ex.submit(_run_frame_task, func, a) for func, a in tasks]):
+            f.result()
 
     concat_file = OUTPUT_DIR / "concat_list.txt"
     with open(concat_file, "w") as f:
@@ -145,10 +151,8 @@ def _frame_durations(total, count):
 
 
 def _ken_burns_params(scene_idx, frame_idx):
-    variant_a = "zoom_in" if scene_idx % 2 == 0 else "zoom_out"
-    variant_b = "pan_left" if scene_idx % 2 == 0 else "pan_right"
-    ken_type = variant_a if frame_idx == 1 else variant_b
-    return ken_type
+    variants = ["zoom_in", "zoom_out", "pan_left"]
+    return variants[(scene_idx + frame_idx) % 3]
 
 
 def _make_video_frame(video_path, duration, out_path):

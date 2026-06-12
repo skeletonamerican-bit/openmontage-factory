@@ -167,9 +167,17 @@ def generate_all_images_t4(scenes, channel, out_dir, scenes_start, scenes_end):
         ok2 = make_image_sana(pipe, inject_style(img2_prompt, channel), photo2, scene_id + 1000)
         log(f"    -> {photo2.name} {'OK' if ok2 else 'FAIL'}")
 
+        photo3 = out_dir / f"{prefix}_photo3.jpg"
+        img3_prompt = scene.get("photo_prompt_3") or scene.get("img1_prompt") or scene.get("title", "")
+        log(f"  [{idx + 1 - scenes_start}/{scenes_end - scenes_start}] photo3...")
+        ok3 = make_image_sana(pipe, inject_style(img3_prompt, channel), photo3, scene_id + 2000)
+        log(f"    -> {photo3.name} {'OK' if ok3 else 'FAIL'}")
+
         if ok1: ok_count += 1
         else: fail_count += 1
         if ok2: ok_count += 1
+        else: fail_count += 1
+        if ok3: ok_count += 1
         else: fail_count += 1
 
     log(f"Images done: {ok_count} OK, {fail_count} FAIL")
@@ -198,9 +206,16 @@ def generate_all_images_pixabay(scenes, channel, out_dir, scenes_start, scenes_e
         ok2 = make_image_pixabay(title, photo2, page=2)
         log(f"    -> {photo2.name} {'OK' if ok2 else 'FAIL'}")
 
+        photo3 = out_dir / f"{prefix}_photo3.jpg"
+        log(f"  [{idx + 1 - scenes_start}/{scenes_end - scenes_start}] photo3...")
+        ok3 = make_image_pixabay(title, photo3, page=3)
+        log(f"    -> {photo3.name} {'OK' if ok3 else 'FAIL'}")
+
         if ok1: ok_count += 1
         else: fail_count += 1
         if ok2: ok_count += 1
+        else: fail_count += 1
+        if ok3: ok_count += 1
         else: fail_count += 1
 
     log(f"Images done: {ok_count} OK, {fail_count} FAIL")
@@ -248,9 +263,17 @@ def generate_all_ltx(scenes, channel, out_dir, scenes_start, scenes_end):
 
     ok_count = 0
     fail_count = 0
+    skip_count = 0
     for idx in range(scenes_start, scenes_end):
         scene = scenes[idx]
         prefix = f"s{idx:03d}"
+
+        # LTX-Video only for every 3rd scene to save time
+        if idx % 3 != 0:
+            log(f"  [{idx + 1 - scenes_start}/{scenes_end - scenes_start}] video... SKIP (no LTX for scene {idx})")
+            skip_count += 1
+            continue
+
         vid_prompt = scene.get("video_prompt") or scene.get("vid_prompt") or scene.get("title", "")
         video = out_dir / f"{prefix}_video.mp4"
 
@@ -261,7 +284,7 @@ def generate_all_ltx(scenes, channel, out_dir, scenes_start, scenes_end):
         if ok: ok_count += 1
         else: fail_count += 1
 
-    log(f"LTX done: {ok_count} OK, {fail_count} FAIL")
+    log(f"LTX done: {ok_count} OK, {fail_count} FAIL, {skip_count} SKIP (scene%3!=0)")
     del ltx
     gc.collect()
     torch.cuda.empty_cache()

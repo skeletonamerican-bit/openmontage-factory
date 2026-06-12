@@ -1,6 +1,7 @@
-import os, json, time, requests, subprocess, zipfile
+import os, json, time, requests, subprocess, zipfile, re
 from pathlib import Path
-from config import get_channel_config, KAGGLE_USERNAME, KAGGLE_KERNEL, PIXABAY_API_KEY, TEST_MODE
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from config import get_channel_config, KAGGLE_USERNAME, KAGGLE_KERNEL, PIXABAY_API_KEY, TEST_MODE, PHOTO_COUNT
 
 ASSETS_DIR = Path("output/assets")
 IMAGES_DIR = ASSETS_DIR / "images"
@@ -19,15 +20,15 @@ def generate_assets(channel, script):
     if TEST_MODE:
         return _generate_test_assets(channel, scenes)
 
-    result = {"images": [], "videos": [], "music": None, "sfx": None}
+    result = {"scene_assets": {}, "music": None, "sfx": None}
 
     try:
         kaggle_result = _run_kaggle_kernel(channel, scenes, cfg)
-        result.update(kaggle_result)
+        result["scene_assets"] = kaggle_result
     except Exception as e:
         print(f"Kaggle failed: {e}, falling back to Pixabay")
         pixabay_result = _pixabay_fallback(scenes)
-        result.update(pixabay_result)
+        result["scene_assets"] = pixabay_result
 
     music_path = _generate_music(channel, cfg)
     sfx_path = _generate_sfx(channel, cfg)
@@ -35,7 +36,7 @@ def generate_assets(channel, script):
     result["sfx"] = sfx_path
 
     meta_path = ASSETS_DIR / "asset_manifest.json"
-    json.dump(result, open(meta_path, "w"), indent=2)
+    json.dump(result, open(meta_path, "w"), indent=2, default=str)
 
     return result
 
@@ -70,15 +71,15 @@ def _run_kaggle_kernel(channel, scenes, cfg):
     output_dir = ASSETS_DIR / "kaggle_output"
     output_dir.mkdir(exist_ok=True)
 
-    for attempt in range(60):
-        time.sleep(30)
+    for attempt in range(90):
+        time.sleep(20)
         try:
             result = subprocess.run(
                 ["kaggle", "kernels", "status", kernel_id],
                 capture_output=True, text=True, timeout=30,
             )
             status = result.stdout.strip().lower()
-            print(f"Kaggle status [{attempt+1}/60]: {status}")
+            print(f"Kaggle status [{attempt+1}/90]: {status}")
 
             if "complete" in status:
                 subprocess.run(
@@ -93,32 +94,32 @@ def _run_kaggle_kernel(channel, scenes, cfg):
             if attempt > 10:
                 raise
 
-    images, videos = _extract_kaggle_output(output_dir, scenes)
-    return {"images": images, "videos": videos}
+    scene_assets = _extract_kaggle_output(output_dir, scenes)
+    return scene_assets
 
 
 def _extract_kaggle_output(output_dir, scenes):
-    images = []
-    videos = []
+    asset_pattern = re.compile(r's(\d+)_(photo[123]|video)\.')
 
+    for z in output_dir.glob("*.zip"):
+        with zipfile.ZipFile(z) as zf:
+            zf.extractall(output_dir)
+
+    scene_assets = {}
     for f in sorted(output_dir.iterdir()):
-        name = f.name.lower()
-        if f.suffix in (".png", ".jpg", ".jpeg", ".webp"):
-            images.append(str(f))
-        elif f.suffix in (".mp4", ".webm", ".mov"):
-            videos.append(str(f))
+        m = asset_pattern.match(f.name.lower())
+        if not m:
+            continue
+        idx = int(m.group(1))
+        kind = m.group(2)
+        if idx not in scene_assets:
+            scene_assets[idx] = {"photos": [], "video": None}
+        if kind == "video":
+            scene_assets[idx]["video"] = str(f)
+        elif kind.startswith("photo"):
+            scene_assets[idx]["photos"].append(str(f))
 
-    if not images:
-        for z in output_dir.glob("*.zip"):
-            with zipfile.ZipFile(z) as zf:
-                zf.extractall(output_dir)
-            break
-
-        for f in sorted(output_dir.iterdir()):
-            if f.suffix in (".png", ".jpg", ".jpeg", ".webp"):
-                images.append(str(f))
-
-    return images, videos
+    return scene_assets
 
 
 def _pixabay_fallback(scenes):
@@ -126,52 +127,60 @@ def _pixabay_fallback(scenes):
         print("No PIXABAY_API_KEY, using placeholder images")
         return _generate_placeholders(scenes)
 
-    images = []
+    scene_assets = {}
     for scene in scenes:
+        si = scene.get("scene", 0)
         keywords = scene.get("keywords", [])
         query = "+".join(keywords[:3]) if keywords else "background"
-        url = f"https://pixabay.com/api/?key={PIXABAY_API_KEY}&q={query}&image_type=photo&per_page=3"
+        url = f"https://pixabay.com/api/?key={PIXABAY_API_KEY}&q={query}&image_type=photo&per_page=5"
 
+        photos = []
         try:
             resp = requests.get(url, timeout=15)
             data = resp.json()
             hits = data.get("hits", [])
-            if hits:
-                img_url = hits[0]["largeImageURL"]
-                ext = img_url.rsplit(".", 1)[-1][:4]
-                out_path = IMAGES_DIR / f"scene_{scene['scene']:03d}.{ext}"
-                img_data = requests.get(img_url, timeout=30).content
-                out_path.write_bytes(img_data)
-                images.append(str(out_path))
-            else:
-                images.append(_placeholder_image(scene["scene"]))
+            for pi in range(PHOTO_COUNT):
+                if pi < len(hits):
+                    img_url = hits[pi]["largeImageURL"]
+                    ext = img_url.rsplit(".", 1)[-1][:4]
+                    out_path = IMAGES_DIR / f"scene_{si:03d}_photo{pi+1}.{ext}"
+                    img_data = requests.get(img_url, timeout=30).content
+                    out_path.write_bytes(img_data)
+                    photos.append(str(out_path))
+                else:
+                    photos.append(_placeholder_image(si, pi))
         except Exception as e:
-            print(f"Pixabay error for scene {scene['scene']}: {e}")
-            images.append(_placeholder_image(scene["scene"]))
+            print(f"Pixabay error for scene {si}: {e}")
+            for pi in range(PHOTO_COUNT):
+                photos.append(_placeholder_image(si, pi))
+        scene_assets[si] = {"photos": photos, "video": None}
 
-    return {"images": images, "videos": []}
+    return scene_assets
 
 
 def _generate_placeholders(scenes):
-    images = []
+    scene_assets = {}
     for scene in scenes:
-        images.append(_placeholder_image(scene["scene"]))
-    return {"images": images, "videos": []}
+        si = scene.get("scene", 0)
+        photos = [_placeholder_image(si, pi) for pi in range(PHOTO_COUNT)]
+        scene_assets[si] = {"photos": photos, "video": None}
+    return scene_assets
 
 
-def _placeholder_image(scene_num):
-    out_path = IMAGES_DIR / f"scene_{scene_num:03d}.png"
+def _placeholder_image(scene_num, photo_idx=0):
+    label = f"Scene {scene_num}" if photo_idx == 0 else f"Scene {scene_num} - {photo_idx+1}"
+    out_path = IMAGES_DIR / f"scene_{scene_num:03d}_photo{photo_idx+1}.png"
     try:
         from PIL import Image, ImageDraw, ImageFont
         img = Image.new("RGB", (1920, 1080), (20, 20, 30))
         draw = ImageDraw.Draw(img)
-        draw.text((960, 540), f"Scene {scene_num}", fill=(200, 200, 200))
+        draw.text((960, 540), label, fill=(200, 200, 200))
         img.save(out_path)
     except ImportError:
         subprocess.run(
             ["ffmpeg", "-y", "-f", "lavfi", "-i",
              f"color=c=#14141e:s=1920x1080:d=5",
-             "-vf", f"drawtext=text='Scene {scene_num}':x=(w-text_w)/2:y=(h-text_h)/2:fontsize=48:fontcolor=white",
+             "-vf", f"drawtext=text='{label}':x=(w-text_w)/2:y=(h-text_h)/2:fontsize=48:fontcolor=white",
              str(out_path)],
             capture_output=True,
         )
@@ -179,9 +188,11 @@ def _placeholder_image(scene_num):
 
 
 def _generate_test_assets(channel, scenes):
-    images = []
+    scene_assets = {}
     for scene in scenes:
-        images.append(_placeholder_image(scene["scene"]))
+        si = scene.get("scene", 0)
+        photos = [_placeholder_image(si, pi) for pi in range(PHOTO_COUNT)]
+        scene_assets[si] = {"photos": photos, "video": None}
 
     music_path = MUSIC_DIR / "bg_music.mp3"
     sfx_path = SFX_DIR / "sfx.mp3"
@@ -203,8 +214,7 @@ def _generate_test_assets(channel, scenes):
         )
 
     return {
-        "images": images,
-        "videos": [],
+        "scene_assets": scene_assets,
         "music": str(music_path),
         "sfx": str(sfx_path),
     }
