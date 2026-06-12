@@ -1,0 +1,56 @@
+name: Produce Video
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 'Channel'
+        required: true
+        type: choice
+        options: [weirdhistory, crimeledger, mindtactics, all]
+      topic:
+        description: 'Video topic'
+        required: true
+        type: string
+
+jobs:
+  produce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+
+      - name: Install Python deps
+        run: |
+          pip install --quiet kokoro edge-tts faster-whisper \
+            kaggle requests python-dotenv soundfile \
+            numpy
+
+      - name: Run pipeline
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          CHANNEL: ${{ inputs.channel }}
+          TOPIC: ${{ inputs.topic }}
+        run: python pipeline/run.py
+
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-${{ inputs.channel }}
+          path: output/*.mp4
+          retention-days: 30

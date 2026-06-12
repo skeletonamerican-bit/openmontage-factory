@@ -4,20 +4,21 @@ generate_assets.py — Kaggle GPU orchestration with dry-run, check, validation
 1. Reads script.json for CHANNEL from projects/{CHANNEL}/script.json
 2. Parses scene visuals → scene_prompts.json
 3. Uploads scene_prompts.json to Kaggle dataset forts845/openmontage-prompts
-4. Pushes kernel to forts845/openmontage-flux-ltx-runner
+4. Pushes kernel to forts845/openmontage-sana-ltx-runner (uses SANA-Sprint 1.6B for images)
 5. Triggers the kernel run
 6. Polls status every 30s until complete or error
 7. Downloads output footage to projects/{CHANNEL}/footage/
 8. Validates downloaded files (MP4 > 100KB, JPG > 50KB)
 """
-import json, os, re, sys, time, subprocess, tempfile, requests, argparse
+import json, os, re, sys, time, subprocess, tempfile, requests, argparse, shutil
 from pathlib import Path
+from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
 CHANNEL_ENV = os.getenv("CHANNEL", "")
 KAGGLE_USERNAME = os.getenv("KAGGLE_USERNAME", "forts845")
 KAGGLE_KEY = os.getenv("KAGGLE_KEY", "")
-KERNEL_ID = "forts845/openmontage-flux-ltx-runner"
+KERNEL_ID = "forts845/openmontage-sana-ltx-runner"
 DATASET_ID = "forts845/openmontage-prompts"
 KAGGLE_DIR = ROOT / "kaggle"
 
@@ -197,37 +198,86 @@ def wait_for_kernel(max_wait=3600):
     return False
 
 
-def download_outputs(channel):
+def download_outputs(channel, scene_ids=None):
     dest = ROOT / "projects" / channel / "footage"
     dest.mkdir(parents=True, exist_ok=True)
+    tmp = Path("/tmp/kaggle_download")
+    if tmp.exists():
+        shutil.rmtree(tmp)
+    tmp.mkdir(parents=True, exist_ok=True)
     r = run_kaggle(
-        ["kaggle", "kernels", "output", KERNEL_ID, "-p", str(dest)],
+        ["kaggle", "kernels", "output", KERNEL_ID, "-p", str(tmp)],
         "kernel output download"
     )
     if r.returncode != 0:
         print(f"Download failed:\n{r.stderr}")
         return []
-    files = sorted(dest.iterdir())
-    if not files:
+
+    raw = []
+    for p in tmp.rglob("*"):
+        if p.is_file():
+            raw.append(p)
+
+    if not raw:
         print("No files downloaded")
         return []
-    print(f"Downloaded {len(files)} files:")
+
+    print(f"Downloaded {len(raw)} raw files, converting to {dest} ...")
     valid = True
-    for f in files:
-        if not f.is_file():
+    converted = []
+
+    for f in raw:
+        m = re.match(r"scene_(\d+)_(photo_1|photo_2|video)\.(png|mp4)", f.name)
+        if not m:
+            print(f"  {f.name}: SKIP (unrecognized pattern)")
             continue
+        idx = int(m.group(1))
+        kind = m.group(2)
+        ext = m.group(3)
+
+        scene_id = scene_ids[idx] if scene_ids and idx < len(scene_ids) else idx
+
+        if kind == "photo_1":
+            out_name = f"s{scene_id}_photo1.jpg"
+        elif kind == "photo_2":
+            out_name = f"s{scene_id}_photo2.jpg"
+        elif kind == "video":
+            out_name = f"s{scene_id}_1.mp4"
+        else:
+            continue
+
+        out_path = dest / out_name
         kb = f.stat().st_size // 1024
-        print(f"  {f.name} ({kb}KB)")
-        ext = f.suffix.lower()
-        if ext == ".mp4" and kb < 100:
+
+        if ext == "png":
+            img = Image.open(f)
+            rgb = img.convert("RGB")
+            rgb.save(str(out_path), "JPEG", quality=95)
+            print(f"  {f.name} → {out_name} ({kb}KB, converted PNG→JPG)")
+        else:
+            if out_path.exists():
+                out_path.unlink()
+            shutil.copy2(f, out_path)
+            print(f"  {f.name} → {out_name} ({kb}KB)")
+
+        converted.append(out_path)
+
+        if ext == "mp4" and kb < 100:
             print(f"    WARNING: MP4 < 100KB, may be corrupt")
             valid = False
-        elif ext == ".jpg" and kb < 50:
+        elif ext == "jpg" and kb < 50:
             print(f"    WARNING: JPG < 50KB, may be corrupt")
             valid = False
+
+    extra = list(dest.glob("*"))
+    print(f"\nConverted {len(converted)} files in {dest}")
+    for f in sorted(extra):
+        if f.is_file():
+            print(f"  {f.name} ({f.stat().st_size // 1024}KB)")
+
     if not valid:
         sys.exit("ERROR: Downloaded file validation failed")
-    return files
+    return converted
 
 
 def extract_visual_from_prompt(raw_prompt, channel):
@@ -451,7 +501,8 @@ def main():
     if not ok:
         sys.exit("ERROR: Kernel run failed or timed out")
 
-    files = download_outputs(channel)
+    scene_ids = [s.get("id") for s in scenes]
+    files = download_outputs(channel, scene_ids)
     if not files:
         sys.exit("ERROR: No files downloaded")
 

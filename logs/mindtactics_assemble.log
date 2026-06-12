@@ -1,0 +1,20 @@
+========================================================
+  MINDTACTICS — Analog Horror — monochrome, red accent, VHS static
+========================================================
+Scenes: 15 | WAV: 15 | Each scene: 15s
+
+  == Scene 1/15: Hook: The Final Count
+  >> ffmpeg -y -i projects/mindtactics/footage/s000_video.mp4...
+  >> ffmpeg -y -i projects/mindtactics/footage/s000_photo1.jpg...
+  >> ffmpeg -y -i projects/mindtactics/footage/s000_photo2.jpg...
+  >> ffmpeg -y -i /tmp/omfactory/s00_vclip.mp4...
+  ERR: 00 / 60. 16.100
+  libavdevice    60.  3.100 / 60.  3.100
+  libavfilter     9. 12.100 /  9. 12.100
+  libswscale      7.  5.100 /  7.  5.100
+  libswresample   4. 12.100 /  4. 12.100
+  libpostproc    57.  3.100 / 57.  3.100
+[in#0 @ 0x5d1174321080] Error opening input: No such file or directory
+Error opening input file /tmp/omfactory/s00_vclip.mp4.
+Error opening input files: No such file or directory
+

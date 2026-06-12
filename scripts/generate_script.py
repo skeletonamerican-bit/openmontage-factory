@@ -1,40 +1,30 @@
-import json, os, sys, urllib.request, urllib.error
+import json, os, sys
 from pathlib import Path
 
-API_URL = "https://models.inference.ai.azure.com/chat/completions"
-MODEL   = "gpt-oss-120b"
+from scripts.llm_router import get_router
 
 CONFIGS = {
     "weirdhistory": {
-        "style": "Gothic Dark Academia, Archive Noir aesthetic, historical mystery documentary",
+        "style": "Archive Noir, Gothic Dark Academia, historical mystery documentary",
         "tone": "dramatic, haunting, reverent with morbid curiosity",
         "scenes": 25,
-        "duration_min": 5,
-        "visual_style": "Gothic Dark Academia / Archive Noir",
-        "color_note": "deep black, amber gold, ink blue palette"
+        "duration_min": 6.25,
+        "visual_style": "Archive Noir / Gothic Dark Academia",
     },
     "crimeledger": {
-        "style": "Scandinavian Detective noir, David Fincher aesthetic (Se7en, Zodiac)",
+        "style": "David Fincher crime documentary (Se7en, Zodiac, Mindhunter)",
         "tone": "investigative, cold, methodical, shocking",
         "scenes": 18,
-        "duration_min": 3.6,
-        "visual_style": "Scandinavian Detective / David Fincher",
-        "color_note": "dark green, cold blue, steel grey palette"
+        "duration_min": 4.5,
+        "visual_style": "Fincher Cold / Crime Documentary",
     },
     "mindtactics": {
-        "style": "Psychological Thriller, Analog Horror aesthetic",
+        "style": "Psychological Horror, Analog Horror aesthetic",
         "tone": "unsettling, analytical, clinical, creeping dread",
         "scenes": 15,
-        "duration_min": 3,
-        "visual_style": "Psychological Thriller / Analog Horror",
-        "color_note": "monochrome with red accent palette"
+        "duration_min": 3.75,
+        "visual_style": "Analog Horror / Psychological Thriller",
     },
-}
-
-VISUAL_SUFFIXES = {
-    "weirdhistory": "[SFX: paper rustle, distant clock chime] color_note: deep black, amber gold, ink blue",
-    "crimeledger": "[SFX: rain patter, typewriter click] color_note: dark green, cold blue, steel grey",
-    "mindtactics": "[SFX: tape rewind, static hiss] color_note: monochrome with red accent",
 }
 
 PROMPT = """You are an elite YouTube documentary scriptwriter like MagnatesMedia.
@@ -50,75 +40,126 @@ RULES:
 3. ALL narrations must use SPECIFIC details: exact amounts, real names, dates, locations
 4. Last scene: moral lesson + "Subscribe to never miss a story like this"
 5. Structure: Hook → Origin → Rise → Betrayal → Unravels → Consequences → Resolution → CTA
-6. Each scene is EXACTLY 12 seconds — narration must be ~25-30 words
+6. EACH scene is EXACTLY 15 seconds — narration must be 45-55 words
 
-For EACH scene, the "visual" field MUST use this EXACT format with 3 prompts separated by pipes:
-IMG1: [describe photo1: the primary photo scene, vivid visual detail, {img_style}]
-| IMG2: [describe photo2: the secondary photo scene, complementary shot, {img_style}]
-| VID: [describe the 4-second video clip scene, cinematic motion, {vid_style}]
+For EACH scene, provide these fields:
+- narration: 45-55 words of voiceover for this 15-second scene
+- video_prompt: [cinematic action/dynamic scene description], {video_style_prompt}
+- photo_prompt_1: [close-up detail shot description], {photo_style_prompt}
+- photo_prompt_2: [wide or medium shot description, different angle], {photo_style_prompt}
+- sfx: "{sfx_value}"
 
-Channel image style keywords - weave these into IMG prompts:
-{img_keywords}
-
-Channel video style keywords - weave these into VID prompts:
-{vid_keywords}
-
-Then append: {sfx_suffix}
+{niche_prompt_notes}
 
 Return ONLY valid JSON, NO markdown:
-{{"title":"","description":"","tags":[],"scenes":[{{"id":1,"title":"","narration":"","visual":"","duration_seconds":12,"emotion":""}}]}}"""
+{{"title":"","description":"","tags":[],"scenes":[{{"id":1,"title":"","narration":"","video_prompt":"","photo_prompt_1":"","photo_prompt_2":"","sfx":""}}]}}"""
+
 
 def main():
-    token = os.environ.get("GITHUB_TOKEN", "").strip()
-    if not token:
-        print("ERROR: GITHUB_TOKEN not set")
-        sys.exit(1)
     ch = os.environ.get("CHANNEL", "weirdhistory").lower().strip()
     topic = os.environ.get("TOPIC", "The Lost History")
     cfg = CONFIGS.get(ch)
     if not cfg:
         print(f"ERROR: Unknown channel {ch}")
         sys.exit(1)
-    sfx = VISUAL_SUFFIXES.get(ch, "")
 
-    img_keywords_map = {
-        "weirdhistory": "historical archive photograph, 35mm film grain, Rembrandt lighting, chiaroscuro contrast, amber candlelight, deep black shadows, dark academia aesthetic, moody atmospheric, Caravaggio style lighting, dusty archive",
-        "crimeledger": "crime scene photograph, cold blue steel lighting, fluorescent light, dark green shadows, forensic documentary style, high contrast black and white with teal tones, Fincher aesthetic, clinical cold atmosphere",
-        "mindtactics": "psychological portrait, high contrast monochrome, single red accent color, psychiatric file aesthetic, dark surreal, analog horror style, glitch distortion, VHS aesthetic",
-    }
-    vid_keywords_map = {
-        "weirdhistory": "cinematic dark historical scene, slow dramatic movement, film grain overlay, amber tones",
-        "crimeledger": "crime documentary footage, cold steel blue tones, slow motion, noir atmosphere",
-        "mindtactics": "psychological thriller abstract, chess pieces slow motion, broken mirror reflection, ink dissolving in water, silhouette in fog, VHS glitch",
+    niche_notes = {
+        "weirdhistory": (
+            "NICHE VIDEO PROMPT FORMULA:\n"
+            "  video_prompt = \"[action from scene], [historical period], "
+            "cinematic slow motion, chiaroscuro lighting, "
+            "candlelight flicker, dark stone chamber, "
+            "35mm film grain, high contrast amber shadows, "
+            "4K cinematic, no modern elements\"\n\n"
+            "NICHE PHOTO PROMPT FORMULA:\n"
+            "  photo_prompt = \"[subject/character from scene], [historical period], "
+            "historical archive photograph style, "
+            "chiaroscuro portrait, dramatic side lighting, "
+            "35mm film grain, aged sepia tones, "
+            "gothic architecture background, "
+            "ultra detailed, photorealistic\"\n\n"
+            "SFX: \"cinematic_boom\""
+        ),
+        "crimeledger": (
+            "NICHE VIDEO PROMPT FORMULA:\n"
+            "  video_prompt = \"[action from scene], crime documentary style, "
+            "cold blue teal color grade, Fincher aesthetic, "
+            "forensic overhead lighting, slow cinematic push-in, "
+            "rain-slicked streets, surveillance camera angle, "
+            "high contrast desaturated, 4K\"\n\n"
+            "NICHE PHOTO PROMPT FORMULA:\n"
+            "  photo_prompt = \"[subject/evidence from scene], "
+            "crime scene documentation style, "
+            "cold forensic blue lighting, high contrast, "
+            "desaturated teal grade, sharp focus, "
+            "investigative documentary aesthetic, "
+            "photorealistic, ultra detailed\"\n\n"
+            "SFX: \"thud_dry\""
+        ),
+        "mindtactics": (
+            "NICHE VIDEO PROMPT FORMULA:\n"
+            "  video_prompt = \"[psychological action from scene], "
+            "psychological horror aesthetic, "
+            "analog VHS camera effect, monochrome with red accent, "
+            "slow zoom into eyes, shadows and negative space, "
+            "unsettling atmosphere, 16mm grain, "
+            "horror film cinematography\"\n\n"
+            "NICHE PHOTO PROMPT FORMULA:\n"
+            "  photo_prompt = \"[psychological image/metaphor from scene], "
+            "analog horror photography style, "
+            "monochrome high contrast, single red accent element, "
+            "deep shadows, claustrophobic framing, "
+            "VHS artifact texture, photorealistic\"\n\n"
+            "SFX: \"static_glitch\""
+        ),
     }
 
-    print(f"Channel:{ch} | Topic:{topic} | Scenes:{cfg['scenes']} | Model:{MODEL}")
-    prompt = PROMPT.format(
-        topic=topic, sfx_suffix=sfx,
-        img_keywords=img_keywords_map.get(ch, ""),
-        vid_keywords=vid_keywords_map.get(ch, ""),
-        img_style=cfg["visual_style"],
-        vid_style=cfg["visual_style"],
+    video_style_prompts = {
+        "weirdhistory": "35mm film grain, chiaroscuro lighting, candlelit, dark stone chamber, amber shadows",
+        "crimeledger": "cold blue teal, Fincher aesthetic, forensic lighting, desaturated, high contrast",
+        "mindtactics": "analog VHS, monochrome with red accent, unsettling, horror cinematography",
+    }
+
+    photo_style_prompts = {
+        "weirdhistory": "historical archive photograph, chiaroscuro, sepia tones, gothic, photorealistic",
+        "crimeledger": "crime scene documentation, cold forensic blue, desaturated teal, photorealistic",
+        "mindtactics": "analog horror photography, monochrome high contrast, red accent, VHS artifact",
+    }
+
+    sfx_map = {
+        "weirdhistory": "cinematic_boom",
+        "crimeledger": "thud_dry",
+        "mindtactics": "static_glitch",
+    }
+
+    print(f"Channel:{ch} | Topic:{topic} | Scenes:{cfg['scenes']}")
+    prompt_text = PROMPT.format(
+        topic=topic,
+        sfx_value=sfx_map.get(ch, ""),
+        niche_prompt_notes=niche_notes.get(ch, ""),
+        video_style_prompt=video_style_prompts.get(ch, ""),
+        photo_style_prompt=photo_style_prompts.get(ch, ""),
         **cfg
     )
-    payload = json.dumps({
-        "model": MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 8192,
-        "temperature": 0.85
-    }).encode()
-    req = urllib.request.Request(API_URL, data=payload, method="POST")
-    req.add_header("Authorization", f"Bearer {token}")
-    req.add_header("Content-Type", "application/json")
-    try:
-        with urllib.request.urlopen(req, timeout=180) as r:
-            text = json.loads(r.read())["choices"][0]["message"]["content"].strip()
-    except urllib.error.HTTPError as e:
-        print(f"ERROR HTTP {e.code}: {e.read().decode()[:300]}")
+
+    router = get_router()
+    result = router.complete(
+        messages=[{"role": "user", "content": prompt_text}],
+        max_tokens=8192,
+        temperature=0.85,
+    )
+
+    if not result.success:
+        print(f"ERROR: All models exhausted after {len(result.attempts)} attempts")
+        for a in result.attempts[-5:]:
+            print(f"  {a['model']}: code {a['code']}")
         sys.exit(1)
-    except Exception as e:
-        print(f"ERROR: {e}")
-        sys.exit(1)
+
+    print(f"Model: {result.model} | Attempts: {len(result.attempts)}")
+    for a in result.attempts:
+        print(f"  [{a['cycle']}] {a['model']} -> {a['code']}")
+
+    text = result.text
     if text.startswith("```"):
         text = text.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
     try:

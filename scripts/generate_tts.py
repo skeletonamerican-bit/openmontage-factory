@@ -2,7 +2,7 @@ import json, os, subprocess, sys, numpy as np
 from pathlib import Path
 
 VOICE_MAP = {
-    "weirdhistory": "af_heart",
+    "weirdhistory": "am_michael",
     "crimeledger": "am_adam",
     "mindtactics": "af_bella",
 }
@@ -93,12 +93,12 @@ def main():
         if not sid or not text:
             print(f"  SKIP scene {sid}: no narration")
             continue
-        final = out_dir / f"{sid}.wav"
+        final = out_dir / f"{sid:03d}.wav"
         if final.exists():
             print(f"  SKIP {sid} (exists)")
             continue
         print(f"  Scene {sid}...", end=" ", flush=True)
-        raw = out_dir / f"{sid}_raw.wav"
+        raw = out_dir / f"{sid:03d}_raw.wav"
         ok = try_kokoro(text, raw, kokoro_voice)
         if not ok:
             ok = try_piper(text, raw, kokoro_voice)

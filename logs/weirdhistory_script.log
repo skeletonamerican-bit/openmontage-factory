@@ -1,0 +1,12 @@
+Channel:weirdhistory | Topic:The Pope Who Put a Corpse on Trial: Cadaver Synod 897 AD | Scenes:25
+  [llm] 02:22:22 qwen/qwen3-coder:free ERR429 {"error":{"message":"Provider returned error","code":429,"metadata":{"raw":"qwen
+    -> fallback to deepseek/deepseek-v4-flash:free
+  [llm] 02:22:22 deepseek/deepseek-v4-flash:free ERR404 {"error":{"message":"This model is unavailable for free. The paid version is ava
+    -> fallback to openai/gpt-oss-20b:free
+  [llm] 02:24:47 openai/gpt-oss-20b:free OK
+Model: openai/gpt-oss-20b:free | Attempts: 3
+  [0] qwen/qwen3-coder:free -> 429
+  [0] deepseek/deepseek-v4-flash:free -> 404
+  [0] openai/gpt-oss-20b:free -> 200
+OK: 21 scenes -> projects/weirdhistory/script.json
+Title: Cadaver Synod: The Day a Pope Became a Corpse
