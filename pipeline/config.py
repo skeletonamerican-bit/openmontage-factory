@@ -1,4 +1,4 @@
-import os, json
+import os, json, time, functools
 
 CHANNELS = {
     "weirdhistory": {
@@ -40,6 +40,21 @@ RESOLUTION = "1920x1080"
 CRF = 23
 AUDIO_BITRATE = "192k"
 
+# Retry settings
+RETRY_MAX_ATTEMPTS = 3
+RETRY_DELAY_SEC = 5
+
+# Audio settings
+LOUDNORM_TARGET = -16
+LOUDNORM_TP = -1
+LOUDNORM_LRA = 7
+MUSIC_VOLUME = 0.12
+MUSIC_VOLUME_DB = -28
+
+# Thumbnail settings
+THUMBNAIL_FRAME = 90
+MIN_VIDEO_SIZE_MB = 10
+
 LLM_MODELS = [
     "qwen/qwen3-coder:free",
     "deepseek/deepseek-v4-flash:free",
@@ -60,5 +75,41 @@ elif _test_mode_env:
 else:
     TEST_MODE = False
 
+
 def get_channel_config(channel):
     return CHANNELS.get(channel, CHANNELS["weirdhistory"])
+
+
+def retry(max_attempts=None, delay=None):
+    if max_attempts is None:
+        max_attempts = RETRY_MAX_ATTEMPTS
+    if delay is None:
+        delay = RETRY_DELAY_SEC
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            last_exc = None
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    last_exc = e
+                    if attempt < max_attempts:
+                        print(f"[retry] {func.__name__} attempt {attempt}/{max_attempts} failed: {e}, retrying in {delay}s...", flush=True)
+                        time.sleep(delay)
+                    else:
+                        print(f"[retry] {func.__name__} all {max_attempts} attempts failed", flush=True)
+            raise last_exc
+        return wrapper
+    return decorator
+
+
+class Timer:
+    def __init__(self, name):
+        self.name = name
+    def __enter__(self):
+        self.start = time.time()
+        return self
+    def __exit__(self, *args):
+        elapsed = time.time() - self.start
+        print(f"[timing] {self.name}: {elapsed:.1f}s", flush=True)

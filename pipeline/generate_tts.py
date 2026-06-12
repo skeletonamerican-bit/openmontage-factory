@@ -1,14 +1,15 @@
 import os, subprocess, json
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from config import get_channel_config, TEST_MODE
+from config import get_channel_config, TEST_MODE, retry, Timer
 
 AUDIO_DIR = Path("output/audio")
 AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 
 
+@retry(max_attempts=3, delay=3)
 def _gen_one_tts(edge_voice, narration, out_path, idx):
-    if os.path.exists(out_path) and os.path.getsize(out_path) > 100:
+    if os.path.exists(out_path) and os.path.getsize(out_path) > 1000:
         return str(out_path)
     try:
         subprocess.run(
@@ -26,6 +27,7 @@ def _gen_one_tts(edge_voice, narration, out_path, idx):
         except (subprocess.CalledProcessError, FileNotFoundError) as e:
             print(f"edge-tts failed for scene {idx}, trying kokoro... {e}")
             _kokoro_fallback(narration, str(out_path))
+    assert os.path.getsize(str(out_path)) > 1000, f"TTS file too small: {out_path}"
     return str(out_path)
 
 
@@ -40,18 +42,12 @@ def generate_tts(channel, script):
         if not narration:
             continue
         out_path = AUDIO_DIR / f"scene_{i+1:03d}.mp3"
-        if TEST_MODE and not os.environ.get("FORCE_TTS"):
-            Path(out_path).write_text("")
-            tasks.append((str(out_path), None))
-        else:
-            tasks.append((str(out_path), (edge_voice, narration, i)))
+        tasks.append((str(out_path), (edge_voice, narration, i)))
 
     audio_files = [None] * len(tasks)
 
     def process(idx, info):
         out_path, params = info
-        if params is None:
-            return idx, out_path
         voice, narration, si = params
         return idx, _gen_one_tts(voice, narration, out_path, si)
 
@@ -64,7 +60,7 @@ def generate_tts(channel, script):
             except Exception as e:
                 print(f"TTS task failed: {e}")
 
-    audio_files = [f for f in audio_files if f is not None]
+    audio_files = [f for f in audio_files if f is not None and os.path.getsize(f) > 1000]
 
     metadata = {"audio_files": audio_files, "voice": edge_voice, "channel": channel}
     meta_path = AUDIO_DIR / "audio_manifest.json"
@@ -74,12 +70,19 @@ def generate_tts(channel, script):
 
 def _kokoro_fallback(text, out_path):
     try:
-        import kokoro
+        from kokoro import KPipeline
         import soundfile as sf
         import numpy as np
 
-        pipeline = kokoro.KokoroPipeline(lang_code="a")
-        audio = pipeline(text, voice="af_heart")[0]
-        sf.write(out_path, audio, 24000)
+        pipeline = KPipeline(lang_code="a")
+        gen = pipeline(text, voice="af_heart")
+        audio_frames = []
+        for result in gen:
+            audio_frames.append(result[0])
+        if audio_frames:
+            audio = np.concatenate(audio_frames)
+            sf.write(out_path, audio, 24000)
+        else:
+            raise RuntimeError("Kokoro produced no audio frames")
     except Exception as e:
         raise RuntimeError(f"Kokoro also failed: {e}")

@@ -1,4 +1,5 @@
 name: Produce Video
+
 on:
   workflow_dispatch:
     inputs:
@@ -13,28 +14,23 @@ on:
         type: string
 
 jobs:
-  produce:
+  weirdhistory:
+    if: inputs.channel == 'weirdhistory' || inputs.channel == 'all'
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 110
+    env:
+      CHANNEL: weirdhistory
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - name: Install system deps
+      - name: Install deps
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq ffmpeg
-
-      - name: Install Python deps
-        run: |
-          pip install --quiet kokoro edge-tts faster-whisper \
-            kaggle requests python-dotenv soundfile \
+          pip install kokoro edge-tts faster-whisper \
+            kaggle requests python-dotenv pillow soundfile \
             numpy
-
+          sudo apt-get install -y ffmpeg
       - name: Run pipeline
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
@@ -43,14 +39,79 @@ jobs:
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          CHANNEL: ${{ inputs.channel }}
           TOPIC: ${{ inputs.topic }}
         run: python pipeline/run.py
-
-      - name: Upload artifact
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
         with:
-          name: video-${{ inputs.channel }}
+          name: video-weirdhistory
+          path: output/*.mp4
+          retention-days: 30
+
+  crimeledger:
+    if: inputs.channel == 'crimeledger' || inputs.channel == 'all'
+    runs-on: ubuntu-latest
+    timeout-minutes: 110
+    env:
+      CHANNEL: crimeledger
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: |
+          pip install kokoro edge-tts faster-whisper \
+            kaggle requests python-dotenv pillow soundfile \
+            numpy
+          sudo apt-get install -y ffmpeg
+      - name: Run pipeline
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TOPIC: ${{ inputs.topic }}
+        run: python pipeline/run.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: video-crimeledger
+          path: output/*.mp4
+          retention-days: 30
+
+  mindtactics:
+    if: inputs.channel == 'mindtactics' || inputs.channel == 'all'
+    runs-on: ubuntu-latest
+    timeout-minutes: 110
+    env:
+      CHANNEL: mindtactics
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: |
+          pip install kokoro edge-tts faster-whisper \
+            kaggle requests python-dotenv pillow soundfile \
+            numpy
+          sudo apt-get install -y ffmpeg
+      - name: Run pipeline
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TOPIC: ${{ inputs.topic }}
+        run: python pipeline/run.py
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: video-mindtactics
           path: output/*.mp4
           retention-days: 30

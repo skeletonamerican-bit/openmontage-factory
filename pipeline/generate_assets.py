@@ -1,7 +1,7 @@
 import os, json, time, requests, subprocess, zipfile, re
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from config import get_channel_config, KAGGLE_USERNAME, KAGGLE_KERNEL, PIXABAY_API_KEY, TEST_MODE, PHOTO_COUNT
+from config import get_channel_config, KAGGLE_USERNAME, KAGGLE_KERNEL, PIXABAY_API_KEY, TEST_MODE, PHOTO_COUNT, retry, Timer
 
 ASSETS_DIR = Path("output/assets")
 IMAGES_DIR = ASSETS_DIR / "images"
@@ -41,6 +41,7 @@ def generate_assets(channel, script):
     return result
 
 
+@retry(max_attempts=3, delay=30)
 def _run_kaggle_kernel(channel, scenes, cfg):
     kernel_slug = KAGGLE_KERNEL
     prompts = [s.get("image_prompt", "") for s in scenes]
@@ -99,7 +100,7 @@ def _run_kaggle_kernel(channel, scenes, cfg):
 
 
 def _extract_kaggle_output(output_dir, scenes):
-    asset_pattern = re.compile(r's(\d+)_(photo[123]|video)\.')
+    asset_pattern = re.compile(r's(\d+)_(photo[123]|video)\..+')
 
     for z in output_dir.glob("*.zip"):
         with zipfile.ZipFile(z) as zf:
@@ -107,6 +108,8 @@ def _extract_kaggle_output(output_dir, scenes):
 
     scene_assets = {}
     for f in sorted(output_dir.iterdir()):
+        if not f.is_file():
+            continue
         m = asset_pattern.match(f.name.lower())
         if not m:
             continue
@@ -118,10 +121,18 @@ def _extract_kaggle_output(output_dir, scenes):
             scene_assets[idx]["video"] = str(f)
         elif kind.startswith("photo"):
             scene_assets[idx]["photos"].append(str(f))
+            # Validate image
+            try:
+                from PIL import Image
+                img = Image.open(f)
+                img.verify()
+            except Exception as e:
+                print(f"WARNING: Corrupted image {f.name}: {e}")
 
     return scene_assets
 
 
+@retry(max_attempts=3, delay=10)
 def _pixabay_fallback(scenes):
     if not PIXABAY_API_KEY:
         print("No PIXABAY_API_KEY, using placeholder images")
@@ -137,6 +148,7 @@ def _pixabay_fallback(scenes):
         photos = []
         try:
             resp = requests.get(url, timeout=15)
+            resp.raise_for_status()
             data = resp.json()
             hits = data.get("hits", [])
             for pi in range(PHOTO_COUNT):
@@ -144,7 +156,7 @@ def _pixabay_fallback(scenes):
                     img_url = hits[pi]["largeImageURL"]
                     ext = img_url.rsplit(".", 1)[-1][:4]
                     out_path = IMAGES_DIR / f"scene_{si:03d}_photo{pi+1}.{ext}"
-                    img_data = requests.get(img_url, timeout=30).content
+                    img_data = _download_with_retry(img_url, timeout=30)
                     out_path.write_bytes(img_data)
                     photos.append(str(out_path))
                 else:
@@ -158,6 +170,13 @@ def _pixabay_fallback(scenes):
     return scene_assets
 
 
+@retry(max_attempts=3, delay=3)
+def _download_with_retry(url, timeout=30):
+    resp = requests.get(url, timeout=timeout)
+    resp.raise_for_status()
+    return resp.content
+
+
 def _generate_placeholders(scenes):
     scene_assets = {}
     for scene in scenes:
@@ -169,13 +188,23 @@ def _generate_placeholders(scenes):
 
 def _placeholder_image(scene_num, photo_idx=0):
     label = f"Scene {scene_num}" if photo_idx == 0 else f"Scene {scene_num} - {photo_idx+1}"
-    out_path = IMAGES_DIR / f"scene_{scene_num:03d}_photo{photo_idx+1}.png"
+    out_path = IMAGES_DIR / f"scene_{scene_num:03d}_photo{photo_idx+1}.jpg"
     try:
-        from PIL import Image, ImageDraw, ImageFont
-        img = Image.new("RGB", (1920, 1080), (20, 20, 30))
+        from PIL import Image, ImageDraw
+        import random
+        r = random.randint(15, 40)
+        g = random.randint(15, 40)
+        b = random.randint(25, 60)
+        img = Image.new("RGB", (1920, 1080), (r, g, b))
         draw = ImageDraw.Draw(img)
-        draw.text((960, 540), label, fill=(200, 200, 200))
-        img.save(out_path)
+        for _ in range(50):
+            x = random.randint(0, 1920)
+            y = random.randint(0, 1080)
+            c = random.randint(30, 80)
+            draw.ellipse([x, y, x+random.randint(50, 300), y+random.randint(50, 300)],
+                         fill=(c, c, c+10), outline=None)
+        draw.text((960, 540), label, fill=(220, 220, 220))
+        img.save(out_path, quality=85)
     except ImportError:
         subprocess.run(
             ["ffmpeg", "-y", "-f", "lavfi", "-i",
@@ -189,23 +218,28 @@ def _placeholder_image(scene_num, photo_idx=0):
 
 def _generate_test_assets(channel, scenes):
     scene_assets = {}
-    for scene in scenes:
-        si = scene.get("scene", 0)
-        photos = [_placeholder_image(si, pi) for pi in range(PHOTO_COUNT)]
-        scene_assets[si] = {"photos": photos, "video": None}
+
+    if PIXABAY_API_KEY:
+        print("Pixabay API key found, downloading real images for test mode")
+        try:
+            scene_assets = _pixabay_fallback(scenes)
+        except Exception as e:
+            print(f"Pixabay fallback in test mode failed: {e}")
+            scene_assets = {}
+
+    if not scene_assets:
+        for scene in scenes:
+            si = scene.get("scene", 0)
+            photos = [_placeholder_image(si, pi) for pi in range(PHOTO_COUNT)]
+            scene_assets[si] = {"photos": photos, "video": None}
 
     music_path = MUSIC_DIR / "bg_music.mp3"
     sfx_path = SFX_DIR / "sfx.mp3"
 
-    if not music_path.exists():
-        subprocess.run(
-            ["ffmpeg", "-y", "-f", "lavfi", "-i",
-             "anoisesrc=d=300:c=pink:a=48000",
-             "-ar", "44100", str(music_path)],
-            capture_output=True,
-        )
+    if not music_path.exists() or os.path.getsize(music_path) < 100:
+        _generate_music(channel, get_channel_config(channel))
 
-    if not sfx_path.exists():
+    if not sfx_path.exists() or os.path.getsize(sfx_path) < 100:
         subprocess.run(
             ["ffmpeg", "-y", "-f", "lavfi", "-i",
              "anoisesrc=d=5:c=brown:a=48000",
@@ -215,8 +249,8 @@ def _generate_test_assets(channel, scenes):
 
     return {
         "scene_assets": scene_assets,
-        "music": str(music_path),
-        "sfx": str(sfx_path),
+        "music": str(music_path) if music_path.exists() else None,
+        "sfx": str(sfx_path) if sfx_path.exists() else None,
     }
 
 
