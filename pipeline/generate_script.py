@@ -1,4 +1,4 @@
-import os, json
+import os, json, time, sys
 from config import get_channel_config, LLM_MODELS, TEST_MODE
 from llm_router import LLMRouter
 
@@ -42,7 +42,11 @@ For scene 0:
   narration must be a gripping question or shocking fact that hooks the viewer
   Mark scene 0 with HOOK=True
 
-Generate a complete script as a JSON array of scene objects."""
+Generate a complete script as a JSON array of {num_scenes} scene objects.
+Return ONLY valid JSON array, no other text."""
+
+    print(f"[{channel}] Generating {num_scenes} scenes in one request...")
+    sys.stdout.flush()
 
     raw = router.call(system_prompt, user_prompt)
     raw = raw.strip()
@@ -61,6 +65,11 @@ Generate a complete script as a JSON array of scene objects."""
         style = cfg["style"]
         script[0]["video_prompt"] = f"dramatic reveal, extreme close-up, high contrast, shocking moment, cinematic opener, {style}"
         script[0]["HOOK"] = True
+
+    for i, scene in enumerate(script):
+        print(f"[{channel}] Генерация сцены {i+1}/{len(script)}...")
+        sys.stdout.flush()
+        time.sleep(2)
 
     return script
 

@@ -1,4 +1,4 @@
-import os, json, requests, time
+import os, json, requests, time, sys
 
 class LLMRouter:
     def __init__(self):
@@ -36,16 +36,27 @@ class LLMRouter:
                             "temperature": 0.7,
                             "max_tokens": 4096,
                         },
-                        timeout=120,
+                        timeout=60,
                     )
                     if resp.status_code == 429:
+                        print(f"Rate limited on {m}, sleeping 5s...")
+                        sys.stdout.flush()
                         time.sleep(5)
                         continue
                     if resp.status_code != 200:
+                        print(f"HTTP {resp.status_code} on {m}, retrying...")
+                        sys.stdout.flush()
                         continue
                     data = resp.json()
-                    return data["choices"][0]["message"]["content"]
+                    content = data["choices"][0]["message"]["content"]
+                    print(f"[LLM] Success with {m}")
+                    sys.stdout.flush()
+                    return content
                 except Exception as e:
+                    print(f"[LLM] Error with {m}: {e}")
+                    sys.stdout.flush()
                     continue
+            print(f"Retry {attempt+1}/{max_retries} failed, sleeping 3s...")
+            sys.stdout.flush()
             time.sleep(3)
         raise RuntimeError("All LLM models failed")
