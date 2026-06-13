@@ -1,8 +1,10 @@
-import json, os
+import json, os, base64, requests
 from pathlib import Path
 
 TOPICS_FILE = Path("topics.json")
 STATE_FILE = Path("topic_state.json")
+GITHUB_REPO = os.environ.get("GITHUB_REPOSITORY", "")
+GH_TOKEN = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN", "")
 
 
 def load_topics():
@@ -19,6 +21,48 @@ def load_state():
 
 def save_state(state):
     STATE_FILE.write_text(json.dumps(state, indent=2), encoding="utf-8")
+    _commit_state_to_github(state)
+
+
+def _commit_state_to_github(state):
+    if not GH_TOKEN or not GITHUB_REPO:
+        print("[topics] No GITHUB_TOKEN or GITHUB_REPOSITORY set, skipping GitHub commit", flush=True)
+        return
+
+    content = json.dumps(state, indent=2)
+    encoded = base64.b64encode(content.encode()).decode()
+
+    # First, get the SHA of the existing file
+    sha = None
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/contents/topic_state.json"
+    headers = {
+        "Authorization": f"Bearer {GH_TOKEN}",
+        "Accept": "application/vnd.github.v3+json",
+    }
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        if r.status_code == 200:
+            sha = r.json().get("sha")
+    except Exception as e:
+        print(f"[topics] Failed to get current file SHA: {e}", flush=True)
+
+    # Commit the updated file
+    data = {
+        "message": "Update topic_state.json [skip ci]",
+        "content": encoded,
+        "branch": os.environ.get("GITHUB_REF_NAME", "main"),
+    }
+    if sha:
+        data["sha"] = sha
+
+    try:
+        r = requests.put(url, headers=headers, json=data, timeout=10)
+        if r.status_code in (200, 201):
+            print(f"[topics] topic_state.json committed to GitHub", flush=True)
+        else:
+            print(f"[topics] GitHub commit failed: {r.status_code} {r.text[:200]}", flush=True)
+    except Exception as e:
+        print(f"[topics] GitHub commit error: {e}", flush=True)
 
 
 def get_next_topic(channel):

@@ -77,7 +77,7 @@ def assemble_video(channel, script, assets, tts):
                 elif fi < len(photos):
                     _make_ken_burns_frame(photos[fi], fd, ken_type, out)
                 else:
-                    _make_color_frame(fd, out)
+                    _make_color_frame(fd, out, narration=scenes[si].get("narration", ""))
 
                 _validate_inputs([out], f"frame scene_{si}_frame{fi}")
 
@@ -302,9 +302,41 @@ def _fade_in(in_path, out_path, duration):
     ])
 
 
-def _make_color_frame(duration, out_path, color="14141e"):
+def _escape_drawtext(text):
+    text = text.replace("\\", "\\\\")
+    text = text.replace("'", "\\'")
+    text = text.replace(":", "\\:")
+    text = text.replace(",", "\\,")
+    text = text.replace("[", "\\[")
+    text = text.replace("]", "\\]")
+    text = text.replace("{", "\\{")
+    text = text.replace("}", "\\}")
+    text = text.replace(";", "\\;")
+    text = text.replace("!", "\\!")
+    return text
+
+
+def _make_color_frame(duration, out_path, narration=""):
+    base_color = "14141e"
+    r = int(base_color[0:2], 16)
+    g = int(base_color[2:4], 16)
+    b = int(base_color[4:6], 16)
+
+    vf = (
+        f"geq=r='{r}+20*random(1)':g='{g}+20*random(1)':b='{b}+30*random(1)'"
+        f",fps={FPS},scale={RESOLUTION}"
+    )
+
+    if narration:
+        escaped = _escape_drawtext(narration)
+        vf += (
+            f",drawtext=text='{escaped}':fontsize=36:fontcolor=white@0.9:"
+            f"x=(w-text_w)/2:y=h-th-60:box=1:boxcolor=black@0.5:boxborderw=10"
+        )
+
     _run_ffmpeg([
-        "-f", "lavfi", "-i", f"color=c={color}:s={RESOLUTION}:d={duration}:r={FPS}",
+        "-f", "lavfi", "-i", f"color=c=#{base_color}:s={RESOLUTION}:d={duration}:r={FPS}",
+        "-vf", vf,
         "-c:v", "libx264", "-pix_fmt", "yuv420p",
         "-preset", "fast",
         str(out_path),

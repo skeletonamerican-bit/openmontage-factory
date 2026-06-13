@@ -12,6 +12,7 @@ from generate_tts import generate_tts
 from assemble import assemble_video
 from notify import send_telegram
 from topics import get_next_topic, get_remaining_count
+from qa.video_qa import run_qa
 
 Path("output").mkdir(exist_ok=True)
 
@@ -136,7 +137,42 @@ def main():
                     traceback.print_exc()
                     _notify_stage(ch, "assembly", error=f"Сборка провалилась: {e}")
 
-    # Phase 5: Notifications with thumbnails and stats
+    # Phase 5: QA validation
+    qa_results = {}
+    for ch in channels:
+        if ch in videos and videos[ch]:
+            with Timer(f"[{ch}] QA validation"):
+                try:
+                    print(f"[{ch}] Running QA on {videos[ch]}", flush=True)
+                    qa = run_qa(ch, videos[ch])
+                    qa_results[ch] = qa
+                    if qa.get("ok"):
+                        print(f"[{ch}] QA PASSED", flush=True)
+                    else:
+                        print(f"[{ch}] QA FAILED: {qa.get('issues', [])}", flush=True)
+                        # Rebuild with Pixabay fallback and reassemble
+                        print(f"[{ch}] Rebuilding with Pixabay-only mode...", flush=True)
+                        os.environ["SKIP_KAGGLE"] = "1"
+                        os.environ["USE_PIXABAY_ONLY"] = "1"
+                        try:
+                            from generate_assets import generate_assets
+                            from assemble import assemble_video
+                            new_assets = generate_assets(ch, scripts[ch])
+                            new_video, new_thumb, new_stats = assemble_video(ch, scripts[ch], new_assets, tts_results[ch])
+                            videos[ch] = new_video
+                            thumbnails[ch] = new_thumb
+                            stats[ch] = new_stats
+                            send_telegram(ch, error=f"QA failed, rebuilt with Pixabay: {qa.get('issues')}")
+                        except Exception as rebuild_e:
+                            print(f"[{ch}] Rebuild failed: {rebuild_e}", flush=True)
+                            send_telegram(ch, error=f"QA rebuild failed: {rebuild_e}")
+                except Exception as qa_e:
+                    print(f"[{ch}] QA error: {qa_e}", flush=True)
+                    import traceback
+                    traceback.print_exc()
+                    qa_results[ch] = {"ok": True, "skipped": True, "error": str(qa_e)}
+
+    # Phase 6: Notifications with thumbnails and stats
     for ch in channels:
         if ch in videos and videos[ch]:
             try:

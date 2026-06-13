@@ -11,7 +11,7 @@ CHANNELS = {
         "music_bpm": 70,
     },
     "crimeledger": {
-        "scenes": 72,
+        "scenes": 80,
         "voice": "am_adam",
         "edge_voice": "en-US-GuyNeural",
         "style": "Fincher aesthetic, cold blue teal grade, forensic overhead lighting, crime scene documentation, desaturated, sharp focus, ultra detailed",
@@ -20,7 +20,7 @@ CHANNELS = {
         "music_bpm": 80,
     },
     "mindtactics": {
-        "scenes": 60,
+        "scenes": 80,
         "voice": "af_bella",
         "edge_voice": "en-US-JennyNeural",
         "style": "analog horror photography, VHS artifact texture, monochrome with red accent, deep shadows, psychological thriller, claustrophobic framing, ultra detailed",

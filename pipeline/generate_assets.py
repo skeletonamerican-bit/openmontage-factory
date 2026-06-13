@@ -1,66 +1,114 @@
-import os, json, time, glob, shutil, requests
+import os, json, time, glob, shutil, requests, tempfile
+from datetime import datetime
 from kaggle.api.kaggle_api_extended import KaggleApi
 
 
 def generate_assets(channel: str, script: list) -> dict:
+    if os.environ.get("USE_PIXABAY_ONLY") or os.environ.get("SKIP_KAGGLE"):
+        print(f"[{channel}] SKIP_KAGGLE/USE_PIXABAY_ONLY set — skipping Kaggle, going to Pixabay fallback", flush=True)
+        OUTPUT_DIR = f"output/{channel}/assets"
+        os.makedirs(OUTPUT_DIR, exist_ok=True)
+        return _pixabay_fallback(channel, script, OUTPUT_DIR)
+
     api = KaggleApi()
     api.authenticate()
 
     KERNEL = "forts845/openmontage-sana-ltx-runner"
+    DATASET = "forts845/openmontage-prompts"
     KAGGLE_DIR = "kaggle"
     OUTPUT_DIR = f"output/{channel}/assets"
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-    scenes_data = []
-    for i, scene in enumerate(script):
-        scenes_data.append({
-            "idx": i,
-            "photo_prompt_1": scene.get("photo_prompt_1", ""),
-            "photo_prompt_2": scene.get("photo_prompt_2", ""),
-            "video_prompt": scene.get("video_prompt", ""),
-            "generate_video": (i % 3 == 0),
-        })
+    scenes_for_kaggle = [
+        {
+            "id": s.get("scene", i),
+            "title": s.get("narration", "")[:100],
+            "photo_prompt_1": s.get("photo_prompt_1") or s.get("image_prompt", "generic scene"),
+            "photo_prompt_2": s.get("photo_prompt_2") or s.get("photo_prompt_1", "generic scene"),
+            "photo_prompt_3": s.get("photo_prompt_3") or s.get("photo_prompt_1", "generic scene"),
+            "video_prompt": s.get("video_prompt", ""),
+        }
+        for i, s in enumerate(script)
+    ]
 
-    prompts_path = os.path.join(KAGGLE_DIR, "prompts.json")
-    with open(prompts_path, "w") as f:
-        json.dump({"channel": channel, "scenes": scenes_data}, f)
+    payload = {
+        "channel": channel,
+        "scenes": scenes_for_kaggle,
+        "generated_at": datetime.utcnow().isoformat(),
+    }
 
-    print(f"[{channel}] Kaggle push...")
-    os.system(
-        f"kaggle kernels push --accelerator NvidiaTeslaT4 "
-        f"-p {KAGGLE_DIR} 2>&1"
-    )
+    # Step 1: Upload prompts to Kaggle dataset
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    tmp_dir = f"/tmp/kaggle_prompts_{channel}_{timestamp}"
+    os.makedirs(tmp_dir, exist_ok=True)
+    prompts_file = os.path.join(tmp_dir, "scene_prompts.json")
+    with open(prompts_file, "w") as f:
+        json.dump(payload, f, indent=2)
 
-    print(f"[{channel}] Waiting for kernel...")
+    print(f"[{channel}] Uploading prompts to Kaggle dataset {DATASET}...", flush=True)
+    for attempt in range(3):
+        try:
+            api.dataset_create_version(
+                tmp_dir,
+                f"update_{channel}_{timestamp}"
+            )
+            print(f"[{channel}] Dataset upload successful", flush=True)
+            break
+        except Exception as e:
+            print(f"[{channel}] Dataset upload attempt {attempt+1} failed: {e}", flush=True)
+            if attempt < 2:
+                time.sleep(5)
+    else:
+        print(f"[{channel}] Dataset upload failed after 3 attempts — Pixabay fallback", flush=True)
+        return _pixabay_fallback(channel, script, OUTPUT_DIR)
+
+    # Step 2: Push kernel
+    print(f"[{channel}] Pushing Kaggle kernel...", flush=True)
+    for attempt in range(3):
+        try:
+            api.kernels_push(kernel_slug=KERNEL, kernel_path=KAGGLE_DIR)
+            print(f"[{channel}] Kernel push successful", flush=True)
+            break
+        except Exception as e:
+            print(f"[{channel}] Kernel push attempt {attempt+1} failed: {e}", flush=True)
+            if attempt < 2:
+                time.sleep(5)
+    else:
+        print(f"[{channel}] Kernel push failed — Pixabay fallback", flush=True)
+        return _pixabay_fallback(channel, script, OUTPUT_DIR)
+
+    # Step 3: Poll kernel status
+    print(f"[{channel}] Waiting for kernel to complete...", flush=True)
     for attempt in range(270):
         time.sleep(20)
         try:
             st = api.kernels_status(KERNEL)
             status = st["status"] if isinstance(st, dict) else str(st)
-            print(f"[{channel}] Kaggle [{attempt*20}s]: {status}")
+            print(f"[{channel}] Kaggle [{attempt*20}s]: {status}", flush=True)
             if status == "complete":
                 break
             if status == "error":
-                print(f"[{channel}] Kaggle ERROR -- Pixabay fallback")
+                print(f"[{channel}] Kaggle ERROR — Pixabay fallback", flush=True)
                 return _pixabay_fallback(channel, script, OUTPUT_DIR)
         except Exception as e:
-            print(f"[{channel}] Poll error: {e}")
+            print(f"[{channel}] Poll error: {e}", flush=True)
             continue
 
-    print(f"[{channel}] Downloading output...")
-    tmp_dir = f"/tmp/kaggle_{channel}"
-    os.makedirs(tmp_dir, exist_ok=True)
+    # Step 4: Download output
+    print(f"[{channel}] Downloading kernel output...", flush=True)
+    dl_dir = f"/tmp/kaggle_output_{channel}_{timestamp}"
+    os.makedirs(dl_dir, exist_ok=True)
 
     for attempt in range(3):
         try:
-            api.kernels_output(KERNEL, path=tmp_dir)
+            api.kernels_output(KERNEL, path=dl_dir)
             break
         except Exception as e:
-            print(f"Download attempt {attempt+1} failed: {e}")
+            print(f"[{channel}] Download attempt {attempt+1} failed: {e}", flush=True)
             time.sleep(10)
 
     photos, videos = [], []
-    for f in glob.glob(f"{tmp_dir}/**/*", recursive=True):
+    for f in glob.glob(f"{dl_dir}/**/*", recursive=True):
         if not os.path.isfile(f):
             continue
         size = os.path.getsize(f)
@@ -73,11 +121,16 @@ def generate_assets(channel: str, script: list) -> dict:
             elif "_video" in name:
                 videos.append(dst)
 
-    print(f"[{channel}] Assets: {len(photos)} photos, {len(videos)} videos")
+    print(f"[{channel}] Assets: {len(photos)} photos, {len(videos)} videos", flush=True)
 
     if len(photos) == 0:
-        print(f"[{channel}] No photos -- Pixabay fallback")
+        print(f"[{channel}] No photos — Pixabay fallback", flush=True)
         return _pixabay_fallback(channel, script, OUTPUT_DIR)
+
+    # Cleanup temp dirs
+    for d in [tmp_dir, dl_dir]:
+        if os.path.exists(d):
+            shutil.rmtree(d, ignore_errors=True)
 
     return {"photos": photos, "videos": videos, "dir": OUTPUT_DIR}
 
@@ -117,5 +170,5 @@ def _pixabay_fallback(channel, script, output_dir):
             except Exception as e:
                 print(f"Pixabay error scene {i}: {e}")
 
-    print(f"Pixabay fallback: {len(photos)} photos")
+    print(f"Pixabay fallback: {len(photos)} photos", flush=True)
     return {"photos": photos, "videos": videos, "dir": output_dir}
