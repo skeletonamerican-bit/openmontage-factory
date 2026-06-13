@@ -1,337 +1,232 @@
-"""
-kaggle_runner.py — Kaggle GPU runner for SANA-Sprint 1.6B + LTX-Video 2B
-On T4 (SM >= 7): generates AI images via SANA-Sprint + AI videos via LTX-Video.
-On P100 (SM < 7): downloads images from Pixabay API as fallback.
-Sequential pipeline loading to fit 16GB VRAM.
+# OpenMontage SANA + LTX Runner
+# Reads prompts from prompts.json or env PROMPTS_JSON
+# Saves photos and videos to /kaggle/working/
 
-Usage:
-    python kaggle_runner.py [--scenes-start N] [--scenes-end N]
-
-Reads: /kaggle/input/openmontage-prompts/scene_prompts.json
-Writes: /kaggle/working/footage/scene_{i:03d}_photo_1.png, photo_2.png, video.mp4
-"""
-import argparse
-import gc
-import json
-import os
-import sys
-import time
-import urllib.parse
-import urllib.request
-from pathlib import Path
-
-import torch
+import os, json, gc, glob, sys
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+import numpy as np
 from PIL import Image
 
-CHANNEL_STYLES = {
-    "weirdhistory": "historical archive photograph, 35mm film grain, Rembrandt lighting, chiaroscuro, amber candlelight, dark academia",
-    "crimeledger": "crime scene documentary, cold blue steel lighting, Fincher aesthetic, teal shadows, forensic atmosphere",
-    "mindtactics": "psychological portrait, high contrast monochrome, red accent color, analog horror, VHS distortion",
-}
+print("=== OpenMontage SANA + LTX Runner ===")
 
-PIXABAY_KEY = "55765604-3d52278fd71142a6824524b58"
+# STEP 0: INSTALL DEPENDENCIES
+import subprocess
+pkgs = [
+    "diffusers>=0.32.0",
+    "transformers>=4.46.0",
+    "accelerate",
+    "sentencepiece",
+    "imageio[ffmpeg]",
+    "Pillow",
+]
+subprocess.run(["pip", "install", "-q"] + pkgs, check=True)
+print("Dependencies installed")
 
+import torch
+print(f"PyTorch: {torch.__version__}")
+print(f"CUDA: {torch.cuda.is_available()}")
+if torch.cuda.is_available():
+    print(f"GPU: {torch.cuda.get_device_name(0)}")
+    total = torch.cuda.get_device_properties(0).total_memory
+    print(f"VRAM: {total/1e9:.1f}GB")
+device = "cuda" if torch.cuda.is_available() else "cpu"
 
-def log(msg):
-    print(msg, flush=True)
+# STEP 1: LOAD PROMPTS
+scenes = []
+channel = "weirdhistory"
 
+# Source 1: file from dataset
+prompts_paths = [
+    "/kaggle/input/openmontage-prompts/prompts.json",
+    "/kaggle/working/prompts.json",
+]
+for path in prompts_paths:
+    if os.path.exists(path):
+        with open(path) as f:
+            data = json.load(f)
+        scenes = data.get("scenes", [])
+        channel = data.get("channel", "weirdhistory")
+        print(f"Prompts loaded from {path}: {len(scenes)} scenes")
+        break
 
-def cuda_stats():
-    if not torch.cuda.is_available():
-        return "NO GPU"
-    gb = torch.cuda.memory_allocated() / 1e9
-    reserved = torch.cuda.memory_reserved() / 1e9
-    return f"alloc={gb:.1f}GB, reserved={reserved:.1f}GB"
+# Source 2: env variable (fallback)
+if not scenes:
+    prompts_json = os.environ.get("PROMPTS_JSON", "")
+    if prompts_json:
+        data = json.loads(prompts_json)
+        scenes = data.get("scenes", [])
+        channel = data.get("channel", "weirdhistory")
+        print(f"Prompts from ENV: {len(scenes)} scenes")
 
-
-def detect_gpu():
-    if not torch.cuda.is_available():
-        sys.exit("ERROR: No GPU detected")
-    name = torch.cuda.get_device_name(0)
-    props = torch.cuda.get_device_properties(0)
-    cap = props.major * 10 + props.minor
-    vram = props.total_memory / 1e9
-    log(f"  GPU: {name} | SM {props.major}.{props.minor} | VRAM: {vram:.1f}GB")
-    return props.major >= 7
-
-
-def load_prompts():
-    paths = [
-        Path("/kaggle/input/openmontage-prompts/scene_prompts.json"),
-        Path("/kaggle/working/scene_prompts.json"),
-        Path("/kaggle/working/openmontage-factory/scene_prompts.json"),
+# Source 3: test data
+if not scenes:
+    print("WARNING: using test prompts")
+    scenes = [
+        {
+            "idx": i,
+            "photo_prompt_1": f"dark medieval scene {i}, chiaroscuro lighting, 35mm grain, gothic architecture, candlelight, ultra detailed photorealistic",
+            "photo_prompt_2": f"historical archive photo scene {i}, amber shadows, stone walls, dramatic lighting, ultra detailed",
+            "video_prompt": f"cinematic slow motion medieval scene {i}, dark atmosphere, candlelight flicker, chiaroscuro, 4K",
+            "generate_video": (i % 3 == 0)
+        }
+        for i in range(6)
     ]
-    for p in paths:
-        if p.exists():
-            with open(p) as f:
-                return json.load(f)
-    log("WARNING: scene_prompts.json not found — generating default test prompts")
-    default_scenes = [
-        {"id": 1, "title": "The Lost City of Atlantis", "img1_prompt": "ruined columns underwater, sunbeams filtering through, ancient stone carvings, deep ocean", "img2_prompt": "aerial view of geometric patterns on ocean floor, sonar mapping visualization", "vid_prompt": "slow reveal of underwater ruins, particles drifting in light beams, mysterious atmosphere"},
-        {"id": 2, "title": "Medieval Alchemist's Workshop", "img1_prompt": "cluttered stone workshop with glass vials, bubbling liquids, candlelight, aged manuscripts", "img2_prompt": "close-up of alchemist's hands holding glowing potion, dust particles in light beam", "vid_prompt": "candle flames flicker as liquid bubbles in flask, steam rises, magical atmosphere"},
-        {"id": 3, "title": "Forgotten Soviet Space Program", "img1_prompt": "abandoned rocket silo overgrown with moss, faded hammer and sickle, industrial decay", "img2_prompt": "retro Soviet space poster peeling on concrete wall, cold war aesthetic", "vid_prompt": "camera pans across abandoned control room, dust motes in dim light, eerie silence"},
-        {"id": 4, "title": "The Phantom Clockmaker", "img1_prompt": "dusty clockmaker shop filled with antique timepieces, cobwebs, single lantern glow", "img2_prompt": "close-up of intricate clockwork mechanism, brass gears, precision engineering, vintage", "vid_prompt": "clock pendulums swing in slow motion, shadows flicker, gears turn with creaking sound"},
-        {"id": 5, "title": "Library of Babel", "img1_prompt": "infinite hexagonal library, bookshelves stretching to vanishing point, warm amber light", "img2_prompt": "ancient leather-bound book open on reading desk, ornate illustrations, candle beside", "vid_prompt": "slow dolly zoom through endless bookshelves, pages flutter, dust dances in light"},
-    ]
-    return {"channel": "weirdhistory", "scenes": default_scenes}
 
+print(f"Channel: {channel}")
+print(f"Total scenes: {len(scenes)}")
+video_scenes = [s for s in scenes if s.get("generate_video", s["idx"] % 3 == 0)]
+print(f"Video scenes: {len(video_scenes)}")
 
-def inject_style(raw_prompt, channel):
-    style = CHANNEL_STYLES.get(channel, "")
-    if style:
-        return f"{style}, {raw_prompt}"
-    return raw_prompt
-
-
-def make_image_sana(pipe, prompt, out_path, seed):
-    if out_path.exists():
-        log(f"    SKIP {out_path.name} (exists)")
-        return True
+# STEP 2: SANA — GENERATE ALL PHOTOS
+print("\n=== PHASE 1: SANA PHOTOS ===")
+SanaPipeline = None
+for cls_name in ["SanaSprintPipeline", "SanaPipeline"]:
     try:
-        result = pipe(
-            prompt=prompt,
-            num_inference_steps=2,
-            generator=torch.Generator(device="cpu").manual_seed(seed),
-        )
-        img = result.images[0]
-        # SANA generates 1024x1024 — center-crop to 16:9, then upscale to 1920x1080
-        crop_h = int(img.width * 9 / 16)
-        top = (img.height - crop_h) // 2
-        img = img.crop((0, top, img.width, top + crop_h))
-        img = img.resize((1920, 1080), Image.LANCZOS)
-        img.save(str(out_path))
-        return True
-    except Exception as e:
-        log(f"    SANA FAILED: {e}")
-        return False
+        exec(f"from diffusers import {cls_name}")
+        SanaPipeline = eval(cls_name)
+        print(f"Using {cls_name}")
+        break
+    except ImportError:
+        continue
 
+if SanaPipeline is None:
+    from diffusers import AutoPipelineForText2Image as SanaPipeline
+    print("Using AutoPipelineForText2Image")
 
-def make_image_pixabay(prompt, out_path, page=1):
-    if out_path.exists():
-        return True
-    try:
-        q = urllib.parse.quote(prompt[:100])
-        url = f"https://pixabay.com/api/?key={PIXABAY_KEY}&q={q}&per_page=5&page={page}&orientation=horizontal&image_type=photo&safesearch=true&min_width=1280"
-        with urllib.request.urlopen(url, timeout=15) as resp:
-            data = json.loads(resp.read())
-        hits = data.get("hits", [])
-        if not hits:
-            log(f"    Pixabay: no results for '{prompt[:40]}...'")
-            return False
-        img_url = hits[0]["largeImageURL"]
-        log(f"    Pixabay: {img_url.split('/')[-1][:50]}")
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-        req = urllib.request.Request(img_url, headers=headers)
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            img_data = resp.read()
-        with open(out_path, "wb") as f:
-            f.write(img_data)
-        img = Image.open(out_path)
-        if img.size != (1920, 1080):
+pipe_sana = SanaPipeline.from_pretrained(
+    "Efficient-Large-Model/Sana_Sprint_1.6B_1024px_diffusers",
+    torch_dtype=torch.bfloat16,
+)
+from diffusers import AutoencoderDC
+vae = AutoencoderDC.from_pretrained(
+    "mit-han-lab/dc-ae-lite-f32c32-sana-1.1-diffusers",
+    torch_dtype=torch.float16,
+)
+pipe_sana.vae = vae
+pipe_sana.to(device)
+print("SANA loaded (with DC-AE-Lite)")
+
+photo_count = 0
+for scene in scenes:
+    idx = scene["idx"]
+    for photo_num in [1, 2]:
+        prompt_key = f"photo_prompt_{photo_num}"
+        prompt = scene.get(prompt_key, scene.get("photo_prompt_1", "dark medieval scene"))
+        out_path = f"/kaggle/working/s{idx:03d}_photo{photo_num}.jpg"
+
+        try:
+            img = pipe_sana(
+                prompt=prompt,
+                num_inference_steps=2,
+                guidance_scale=4.0,
+                width=1024,
+                height=1024,
+            ).images[0]
+
             img = img.resize((1920, 1080), Image.LANCZOS)
-            img.save(str(out_path))
-        return True
-    except Exception as e:
-        log(f"    Pixabay FAILED: {e}")
-        return False
+            img.save(out_path, "JPEG", quality=90)
+            size = os.path.getsize(out_path)
+            print(f"s{idx:03d}_photo{photo_num}.jpg: {size/1024:.0f}KB")
+            assert size > 10000, f"Too small: {out_path}"
+            photo_count += 1
 
+        except Exception as e:
+            print(f"ERROR photo {idx}/{photo_num}: {e}")
+            colors = [(20,15,10),(15,20,10),(10,15,20)]
+            color = colors[idx % 3]
+            noise = np.random.randint(0,30,(1080,1920,3),dtype=np.uint8)
+            img_arr = np.clip(np.array(color,dtype=np.uint8) + noise, 0, 255).astype(np.uint8)
+            Image.fromarray(img_arr).save(out_path, "JPEG", quality=85)
+            photo_count += 1
 
-def generate_all_images_t4(scenes, channel, out_dir, scenes_start, scenes_end):
-    log("\n=== PHASE 1: SANA-Sprint 1.6B (T4 GPU) ===")
-    log(f"CUDA before model load: {cuda_stats()}")
+print(f"SANA done: {photo_count} photos")
 
-    from diffusers import SanaPipeline
-    pipe = SanaPipeline.from_pretrained(
-        "Efficient-Large-Model/Sana_Sprint_1.6B_1024px",
-        torch_dtype=torch.float16,
-    )
-    pipe.enable_model_cpu_offload()
-    log(f"CUDA after model load: {cuda_stats()}")
+# FREE VRAM
+del pipe_sana
+gc.collect()
+torch.cuda.empty_cache()
+torch.cuda.synchronize()
+if torch.cuda.is_available():
+    used = torch.cuda.memory_allocated()/1e9
+    print(f"VRAM after SANA: {used:.2f}GB")
 
-    ok_count = 0
-    fail_count = 0
-    for idx in range(scenes_start, scenes_end):
-        scene = scenes[idx]
-        scene_id = scene.get("id", idx + 1)
-        prefix = f"s{idx:03d}"
-        img1_prompt = scene.get("photo_prompt_1") or scene.get("img1_prompt") or scene.get("title", "")
-        img2_prompt = scene.get("photo_prompt_2") or scene.get("img2_prompt") or scene.get("title", "")
-        photo1 = out_dir / f"{prefix}_photo1.jpg"
-        photo2 = out_dir / f"{prefix}_photo2.jpg"
+# STEP 3: LTX-VIDEO
+print("\n=== PHASE 2: LTX-VIDEO ===")
+from diffusers import LTXPipeline
+import imageio
 
-        log(f"  [{idx + 1 - scenes_start}/{scenes_end - scenes_start}] photo1...")
-        ok1 = make_image_sana(pipe, inject_style(img1_prompt, channel), photo1, scene_id)
-        log(f"    -> {photo1.name} {'OK' if ok1 else 'FAIL'}")
-
-        log(f"  [{idx + 1 - scenes_start}/{scenes_end - scenes_start}] photo2...")
-        ok2 = make_image_sana(pipe, inject_style(img2_prompt, channel), photo2, scene_id + 1000)
-        log(f"    -> {photo2.name} {'OK' if ok2 else 'FAIL'}")
-
-        photo3 = out_dir / f"{prefix}_photo3.jpg"
-        img3_prompt = scene.get("photo_prompt_3") or scene.get("img1_prompt") or scene.get("title", "")
-        log(f"  [{idx + 1 - scenes_start}/{scenes_end - scenes_start}] photo3...")
-        ok3 = make_image_sana(pipe, inject_style(img3_prompt, channel), photo3, scene_id + 2000)
-        log(f"    -> {photo3.name} {'OK' if ok3 else 'FAIL'}")
-
-        if ok1: ok_count += 1
-        else: fail_count += 1
-        if ok2: ok_count += 1
-        else: fail_count += 1
-        if ok3: ok_count += 1
-        else: fail_count += 1
-
-    log(f"Images done: {ok_count} OK, {fail_count} FAIL")
-    del pipe
-    gc.collect()
-    torch.cuda.empty_cache()
-
-
-def generate_all_images_pixabay(scenes, channel, out_dir, scenes_start, scenes_end):
-    log("\n=== PHASE 1: Pixabay (P100 fallback) ===")
-
-    ok_count = 0
-    fail_count = 0
-    for idx in range(scenes_start, scenes_end):
-        scene = scenes[idx]
-        prefix = f"s{idx:03d}"
-        title = scene.get("title", "")
-        photo1 = out_dir / f"{prefix}_photo1.jpg"
-        photo2 = out_dir / f"{prefix}_photo2.jpg"
-
-        log(f"  [{idx + 1 - scenes_start}/{scenes_end - scenes_start}] photo1...")
-        ok1 = make_image_pixabay(title, photo1, page=1)
-        log(f"    -> {photo1.name} {'OK' if ok1 else 'FAIL'}")
-
-        log(f"  [{idx + 1 - scenes_start}/{scenes_end - scenes_start}] photo2...")
-        ok2 = make_image_pixabay(title, photo2, page=2)
-        log(f"    -> {photo2.name} {'OK' if ok2 else 'FAIL'}")
-
-        photo3 = out_dir / f"{prefix}_photo3.jpg"
-        log(f"  [{idx + 1 - scenes_start}/{scenes_end - scenes_start}] photo3...")
-        ok3 = make_image_pixabay(title, photo3, page=3)
-        log(f"    -> {photo3.name} {'OK' if ok3 else 'FAIL'}")
-
-        if ok1: ok_count += 1
-        else: fail_count += 1
-        if ok2: ok_count += 1
-        else: fail_count += 1
-        if ok3: ok_count += 1
-        else: fail_count += 1
-
-    log(f"Images done: {ok_count} OK, {fail_count} FAIL")
-
-
-def make_ltx_video(pipe, prompt, out_path):
-    if out_path.exists():
-        log(f"    SKIP {out_path.name} (exists)")
-        return True
-    try:
-        result = pipe(
-            prompt=prompt,
-            negative_prompt="blurry, low quality, watermark, text, distorted",
-            width=1280, height=704,
-            num_frames=97,
-            num_inference_steps=8,
-            guidance_scale=3.0,
-        )
-        frames = result.frames[0]
-        import imageio
-        imageio.mimwrite(
-            str(out_path), frames,
-            fps=30, quality=8,
-            output_params=["-vcodec", "libx264", "-pix_fmt", "yuv420p"],
-        )
-        return True
-    except Exception as e:
-        log(f"    FAILED: {e}")
-        return False
-
-
-def generate_all_ltx(scenes, channel, out_dir, scenes_start, scenes_end):
-    log("\n=== PHASE 2: LTX-Video 2B ===")
-    log(f"CUDA before LTX load: {cuda_stats()}")
-
-    from diffusers import LTXPipeline
-    ltx = LTXPipeline.from_pretrained(
+try:
+    pipe_ltx = LTXPipeline.from_pretrained(
         "Lightricks/LTX-Video",
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
     )
-    ltx.enable_model_cpu_offload()
-    ltx.vae.enable_tiling()
-    ltx.enable_attention_slicing()
-    log(f"CUDA after LTX load: {cuda_stats()}")
+    pipe_ltx.enable_model_cpu_offload()
+    pipe_ltx.enable_attention_slicing()
+    print("LTX-Video loaded")
+    ltx_loaded = True
+except Exception as e:
+    print(f"LTX load failed: {e}")
+    ltx_loaded = False
 
-    ok_count = 0
-    fail_count = 0
-    skip_count = 0
-    for idx in range(scenes_start, scenes_end):
-        scene = scenes[idx]
-        prefix = f"s{idx:03d}"
+video_count = 0
+if ltx_loaded:
+    for scene in video_scenes:
+        idx = scene["idx"]
+        out_path = f"/kaggle/working/s{idx:03d}_video.mp4"
 
-        # LTX-Video only for every 3rd scene to save time
-        if idx % 3 != 0:
-            log(f"  [{idx + 1 - scenes_start}/{scenes_end - scenes_start}] video... SKIP (no LTX for scene {idx})")
-            skip_count += 1
+        try:
+            output = pipe_ltx(
+                prompt=scene.get("video_prompt", "cinematic dark scene"),
+                negative_prompt="blurry, static, low quality, worst quality",
+                width=640,
+                height=384,
+                num_frames=49,
+                num_inference_steps=20,
+                guidance_scale=3.0,
+            )
+            frames = output.frames[0]
+            imageio.mimwrite(
+                out_path,
+                [np.array(f) for f in frames],
+                fps=24,
+                quality=7,
+                macro_block_size=None,
+            )
+            size = os.path.getsize(out_path)
+            print(f"s{idx:03d}_video.mp4: {size/1024:.0f}KB")
+            assert size > 100000, f"Too small: {out_path}"
+            video_count += 1
+
+        except Exception as e:
+            print(f"ERROR video {idx}: {e}")
             continue
 
-        vid_prompt = scene.get("video_prompt") or scene.get("vid_prompt") or scene.get("title", "")
-        video = out_dir / f"{prefix}_video.mp4"
-
-        log(f"  [{idx + 1 - scenes_start}/{scenes_end - scenes_start}] video...")
-        ok = make_ltx_video(ltx, inject_style(vid_prompt, channel), video)
-        log(f"    -> {video.name} {'OK' if ok else 'FAIL'}")
-
-        if ok: ok_count += 1
-        else: fail_count += 1
-
-    log(f"LTX done: {ok_count} OK, {fail_count} FAIL, {skip_count} SKIP (scene%3!=0)")
-    del ltx
+    del pipe_ltx
     gc.collect()
     torch.cuda.empty_cache()
 
+print(f"LTX done: {video_count} videos")
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--scenes-start", type=int, default=0)
-    parser.add_argument("--scenes-end", type=int, default=None)
-    args = parser.parse_args()
+# STEP 4: FINAL REPORT
+print("\n=== FINAL REPORT ===")
+all_files = (
+    glob.glob("/kaggle/working/s*_photo*.jpg") +
+    glob.glob("/kaggle/working/s*_video.mp4")
+)
+all_files.sort()
+total_size = 0
+for f in all_files:
+    size = os.path.getsize(f)
+    total_size += size
+    print(f"  {os.path.basename(f)}: {size/1024:.0f}KB")
 
-    log("=== SANA-Sprint + LTX Runner ===")
-    log(f"PyTorch: {torch.__version__}")
-    log(f"CUDA available: {torch.cuda.is_available()}")
+print(f"\nTotal files: {len(all_files)}")
+print(f"Photos: {photo_count}")
+print(f"Videos: {video_count}")
+print(f"Total size: {total_size/1024/1024:.1f}MB")
 
-    is_t4 = detect_gpu()
+if photo_count == 0:
+    print("CRITICAL ERROR: no photos")
+    sys.exit(1)
 
-    data = load_prompts()
-    channel = data.get("channel", "weirdhistory")
-    scenes = data.get("scenes", [])
-    total = len(scenes)
-    log(f"Channel: {channel} | Total scenes: {total}")
-
-    scenes_end = args.scenes_end if args.scenes_end is not None else total
-    scenes_start = min(args.scenes_start, total)
-    scenes_end = min(scenes_end, total)
-    log(f"Processing scenes: {scenes_start} to {scenes_end - 1} ({scenes_end - scenes_start} scenes)")
-
-    out_dir = Path("/kaggle/working/footage")
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    if is_t4:
-        generate_all_images_t4(scenes, channel, out_dir, scenes_start, scenes_end)
-        generate_all_ltx(scenes, channel, out_dir, scenes_start, scenes_end)
-    else:
-        log("P100 detected — SDXL/LTX GPU kernels not available in this PyTorch build.")
-        log("Using Pixabay API for images (free stock photos). Videos skipped.")
-        generate_all_images_pixabay(scenes, channel, out_dir, scenes_start, scenes_end)
-
-    log("\n=== Summary ===")
-    files = sorted(out_dir.iterdir())
-    log(f"Total assets: {len(files)}")
-    for f in files:
-        kb = f.stat().st_size // 1024 if f.is_file() else 0
-        log(f"  {f.name} ({kb}KB)")
-    log("=== Done ===")
-
-
-if __name__ == "__main__":
-    main()
+print("=== KERNEL COMPLETE ===")

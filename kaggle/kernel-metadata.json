@@ -1,14 +1,14 @@
 {
   "id": "forts845/openmontage-sana-ltx-runner",
-  "title": "OpenMontage SANA + LTX Runner",
+  "title": "OpenMontage SANA LTX Runner",
   "code_file": "flux_ltx_runner.py",
   "language": "python",
   "kernel_type": "script",
   "is_private": true,
   "enable_gpu": true,
-  "enable_gpu_type": "nvidia-tesla-t4",
+  "enable_tpu": false,
   "enable_internet": true,
-  "dataset_sources": ["forts845/openmontage-prompts"],
+  "dataset_sources": [],
   "competition_sources": [],
   "kernel_sources": []
 }
